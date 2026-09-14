@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
     favoritesParam === null ? undefined : favoritesParam.split(",").filter(Boolean);
 
   try {
-    const result = queryJokes({
+    const result = await queryJokes({
       q,
       category: sp.get("category") ?? undefined,
       format: sp.get("format") ?? undefined,

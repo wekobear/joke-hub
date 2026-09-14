@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
   let issue = null;
 
   if (dateParam === null) {
-    issue = getLatestIssueWithJokes();
+    issue = await getLatestIssueWithJokes();
     if (!issue) {
       return NextResponse.json({ error: "暂无有内容的期次" }, { status: 404 });
     }
@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     if (!isValidDate(dateParam)) {
       return NextResponse.json({ error: "date 必须是有效的 YYYY-MM-DD" }, { status: 400 });
     }
-    issue = getIssue(dateParam);
+    issue = await getIssue(dateParam);
     if (!issue) {
       return NextResponse.json({ error: `无 ${dateParam} 这一期` }, { status: 404 });
     }
@@ -26,5 +26,5 @@ export async function GET(req: NextRequest) {
     }
   }
 
-  return NextResponse.json({ issue, items: getJokesByIds(issue.jokeIds) });
+  return NextResponse.json({ issue, items: await getJokesByIds(issue.jokeIds) });
 }

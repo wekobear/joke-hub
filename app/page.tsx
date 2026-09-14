@@ -11,19 +11,19 @@ export default async function DailyPage({
   searchParams: Promise<{ date?: string }>;
 }) {
   const { date } = await searchParams;
-  const issues = listIssues();
-  const latest = getLatestIssueWithJokes();
+  const issues = await listIssues();
+  const latest = await getLatestIssueWithJokes();
   const today = todayInShanghai();
 
   // 默认展示最新有内容的一期；指定日期必须是有效期次
   const issue = date
     ? (issues.find((i) => i.date === date) ?? null)
     : latest;
-  const jokes = issue ? getJokesByIds(issue.jokeIds) : [];
+  const jokes = issue ? await getJokesByIds(issue.jokeIds) : [];
   // 短区：所有非脱口秀内容（短笑话/相声/讽刺对话）；长区：仅脱口秀
   const shorts = jokes.filter((j) => j.format !== "脱口秀").slice(0, 10);
   const longs = jokes.filter((j) => j.format === "脱口秀").slice(0, 1);
-  const notice = getNotice();
+  const notice = await getNotice();
 
   return (
     <main className="container">

@@ -11,7 +11,7 @@ export default async function JokeDetail({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const joke = getJoke(decodeURIComponent(id));
+  const joke = await getJoke(decodeURIComponent(id));
   if (!joke) notFound();
 
   const fullText = `${joke.title}\n\n${joke.body}`;
