@@ -2,7 +2,7 @@
 
 Next.js App Router + TypeScript 的轻量中文笑话小站。
 
-> **当前状态（如实说明）**：站点内容为**已审核的演示内容**（`content/seed.json`，12 条），自动采集调度**未启用**——仓库内没有任何定时任务、爬虫或采集脚本在运行。新内容只能通过手动执行 `content:import` 导入。
+> **当前状态（如实说明）**：站点内容为**已审核的演示内容**（`content/seed.json`，12 条）。每日自动流水线（本地 claude 生产 → 独立校验 → 门禁发布，见下文）已实现并通过本地测试，但按日期调度**默认未安装**，云端（Supabase）项目**尚未创建**——当前线上形态仍为演示内容。
 
 ## 界面预览
 
@@ -96,7 +96,13 @@ Node 24 自带 `node:sqlite`（DatabaseSync），库文件默认 `data/jokes.sql
 
 ### 2. 应用 SQL 迁移
 
-打开项目 Dashboard → **SQL Editor**，粘贴 `supabase/migrations/` 下的迁移文件全部内容并执行。它创建 `joke_jokes` / `joke_issues` / `joke_issue_jokes` / `joke_metadata` 四张表（独立于其他项目的表，均带 `joke_` 前缀），启用 RLS，并创建仅 `service_role` 可执行的导入 RPC `joke_import_content`。也可以用 Supabase CLI：`npx supabase link` 后 `npx supabase db push`。
+打开项目 Dashboard → **SQL Editor**，按文件名顺序粘贴 `supabase/migrations/` 下每个迁移文件的全部内容并执行：
+
+1. 初始 schema：`joke_jokes` / `joke_issues` / `joke_issue_jokes` / `joke_metadata` 四张表（独立于其他项目的表，均带 `joke_` 前缀）、RLS、仅 `service_role` 可执行的导入 RPC `joke_import_content`
+2. 每日流水线：运行表 `joke_daily_runs`（RLS 启用且无任何 policy，anon 不可见）、原子认领 RPC `joke_daily_claim` 与幂等发布 RPC `joke_daily_publish`（固定 09:00 Asia/Shanghai 门禁、按日期 advisory 事务锁、已发布内容覆盖保护）
+3. 分类计数 RPC `joke_category_counts`（DB 内 GROUP BY，公开读取路径）
+
+也可以用 Supabase CLI：`npx supabase link` 后 `npx supabase db push`。迁移只新增表/函数，不改动或删除既有数据。
 
 ### 3. 配置环境变量
 
@@ -136,13 +142,62 @@ npm run content:import -- new-issue.json                    # 新行发布，已
 - 发布/下线：Table Editor 中把对应行的 `status` 在 `draft` / `published` 间切换即可，无需额外后台；draft 内容对网站与 API 完全不可见
 - 无需配置任何定时任务或付费服务；后续自动发布可在现有 CLI 之外自行调度 `content:import`
 
-### 6. 云端验收（可选）
+### 6. 云端验收（可选，仅限专用测试项目）
 
 ```bash
-npm run supabase-verify
+export TEST_SUPABASE_URL="https://<测试项目ref>.supabase.co"
+export TEST_SUPABASE_ANON_KEY="<测试项目 anon/publishable key>"
+export TEST_SUPABASE_SERVICE_KEY="<测试项目 service key>"
+npm run supabase-verify -- --confirm-test-project
 ```
 
-需要真实凭据，验证迁移已应用、导入幂等、draft 隔离（详情/搜索/随机/列表均不可见 draft）与 RPC 仅 service_role 可执行。缺凭据时明确退出，不做模拟验收。
+只认 `TEST_SUPABASE_*` 变量（绝不读取生产 `SUPABASE_*`），且必须显式加
+`--confirm-test-project` 确认目标是专用测试项目。验证迁移已应用、导入幂等、
+draft 隔离（详情/搜索/随机/列表均不可见 draft）、anon 写与 RPC 权限回收、失败
+事务回滚；运行前预检远期测试日期占用，结束后按登记精确清理并核对清零。缺凭据
+或未确认时明确退出（exit 2），不做模拟验收。退出码：0 通过 / 1 验收失败 /
+2 守卫拒绝 / 3 清理失败。
+
+## 每日自动流水线（v0.3.x）
+
+本地 claude CLI 生产当日原创内容 → 程序化硬校验 + 独立 CLI 审稿 → 原子认领 →
+时间门禁发布 → 公开 API 读回核验，一条命令完成：
+
+```bash
+npm run daily                    # 全流程（发布受门禁约束）
+npm run daily -- --prepare       # 只生产+校验+审稿+本地保存，不写库不发布（无云验证）
+npm run daily -- --date 2026-09-16 --prepare   # 提前准备某天内容
+npm run daily -- --status        # 查看该日期运行状态
+```
+
+合同要点：
+
+- **固定 Asia/Shanghai**：内容日期与 09:00 发布门禁均按上海时区计算；云端
+  RPC 用服务器时钟复核（本机时钟错误也无法提前发布），未来日期绝不发布
+- **门禁语义**：09:00 前触发只生产不发布（exit 3，内容就绪为 prepared）；
+  重跑在门禁后发布；错过 09:00 的迟到补发允许；同日已发布 → 幂等核验（不重复
+  生产、不重写）；hash 不同 → 拒绝覆盖已发布内容（exit 4）
+- **校验拒绝不发布**：条数配比（10 短 + 1 脱口秀）、日期/ID 精确匹配、分类
+  白名单、原创来源、长度边界、外链/引用痕迹、近期 14 天与当批内部查重；独立
+  CLI 审稿（与生产无共享上下文）任一拒绝 → 最多一次修稿，仍失败 exit 2，失败
+  材料保存在 `data/daily-runs/<date>/rejected-*.json`
+- **不信任模型自报**：发布以写库后从公开读取路径（数据层 + 网站
+  `/api/v1/daily`）读回逐字段比对为准，hash（覆盖不可变日刊字段）与运行记录
+  绑定；`--skip-http` 跳过网站核验时以 `published-unverified` 非零退出，不算
+  完整成功
+- **并发互斥**：本机 SQLite 事务锁（进程崩溃自动释放）+ 云端按日期原子认领
+- **退出码**：0 成功（含幂等）/ 2 校验拒绝 / 3 门禁未到 / 4 其他错误
+
+产品运行状态与日志全部在 `data/daily-runs/<date>/`（run-*.json / latest.json /
+package.json / pipeline.log），不依赖任何共享临时路径。调度示例（launchd /
+cron，默认未安装）见 `scheduling/README.md`。测试：
+
+```bash
+npm run daily-selftest   # 合同自测：注入生产/审稿，覆盖拒绝/门禁/幂等/覆盖保护/锁
+```
+
+云端尚未创建时流程自动落到本地 SQLite 模式（门禁仅本机预检），可验证生产与
+校验链路，但**不构成端到端验收**。
 
 ## 技能包
 
