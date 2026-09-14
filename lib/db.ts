@@ -1,8 +1,9 @@
 import "server-only";
 import path from "node:path";
+import os from "node:os";
+import seedJson from "../content/seed.json";
 import {
   openDb,
-  defaultDbPath,
   importContent as storeImportContent,
   listIssues as storeListIssues,
   getIssue as storeGetIssue,
@@ -23,11 +24,30 @@ import {
 // 测试/持久化可用 JOKES_DB_PATH 指定库文件路径。
 export type { Issue, Joke, JokePage, JokeQuery };
 
-const DB_PATH = defaultDbPath();
-const SEED_PATH = path.join(process.cwd(), "content", "seed.json");
+// Netlify 等无持久磁盘的运行环境：默认库文件放到临时目录（函数实例内有效），
+// 本地开发/自托管仍保持 data/jokes.sqlite 不变；JOKES_DB_PATH 始终优先。
+// 运行时环境识别：netlify.toml 里的环境变量不进入 Functions（仅构建期生效），
+// 平台只保证注入 SITE_ID / SITE_NAME（及 NETLIFY=true）等内置元数据，
+// 故以元数据判断，而非依赖配置文件变量。
+function isNetlifyRuntime(): boolean {
+  return (
+    process.env.NETLIFY === "true" ||
+    Boolean(process.env.SITE_ID && process.env.SITE_NAME)
+  );
+}
+
+function resolveDbPath(): string {
+  if (process.env.JOKES_DB_PATH) return process.env.JOKES_DB_PATH;
+  if (isNetlifyRuntime()) return path.join(os.tmpdir(), "joke-hub-demo.sqlite");
+  return path.join(process.cwd(), "data", "jokes.sqlite");
+}
+
+const DB_PATH = resolveDbPath();
+// seed 直接内嵌打包（content/seed.json 已入库），无持久磁盘环境也能完成空库初始化。
+const SEED_DATA = seedJson;
 
 // 种子只在真正空库时导入一次；之后的修改仅由显式 content:import 控制。
-const d = openDb(DB_PATH, SEED_PATH);
+const d = openDb(DB_PATH, SEED_DATA);
 
 export function getDbPath(): string {
   return DB_PATH;

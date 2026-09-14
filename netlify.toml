@@ -1,0 +1,11 @@
+# Netlify 部署配置：Next.js 16 由官方 OpenNext 运行时自动适配（>=13.5 全支持）。
+# 本站为只读种子演示：SQLite 数据库在函数临时目录按 content/seed.json 初始化，
+# 收藏等个人数据仍存于浏览器 localStorage，服务端数据不跨实例持久。
+[build]
+  command = "npm run build"
+  publish = ".next"
+
+[build.environment]
+  NODE_VERSION = "24"
+  # 构建期（预渲染/类型检查等）与本地默认 data/ 目录解耦，避免只读工作目录
+  JOKES_DB_PATH = "/tmp/joke-hub-demo.sqlite"

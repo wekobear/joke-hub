@@ -34,7 +34,7 @@ export interface JokeQuery {
 }
 
 export function defaultDbPath(): string;
-export function openDb(dbPath?: string, seedPath?: string | null): unknown;
+export function openDb(dbPath?: string, seedPath?: string | object | null): unknown;
 export function importContent(d: unknown, raw: unknown): void;
 export function listIssues(d: unknown): Issue[];
 export function getIssue(d: unknown, date: string): Issue | null;

@@ -37,6 +37,21 @@ npm start          # http://127.0.0.1:4310
 
 首次启动时，若数据库为空会自动从 `content/seed.json` 幂等导入演示内容（只初始化一次）。
 
+## Netlify 部署（只读演示模式）
+
+仓库根目录的 `netlify.toml` 已完成适配，推送到 GitHub 后在 Netlify 关联该仓库即可自动连续部署（主分支 `main`）：
+
+- **构建**：`npm run build`，Node 24（`NODE_VERSION=24`，满足 `node:sqlite` 要求）。注意：`netlify.toml` 中的环境变量**仅构建期生效，不进入 Functions 运行时**（官方环境变量文档）；运行时通过平台注入的站点元数据（`NETLIFY=true` / `SITE_ID` + `SITE_NAME`）识别 Netlify 环境，自动回退临时目录 SQLite
+- **框架适配**：Netlify 官方 OpenNext 运行时自动支持 Next.js 16，无需额外安装插件
+- **数据**：Netlify 函数无持久磁盘，部署后为**只读种子演示**——SQLite 库在函数实例临时目录从打包内嵌的 `content/seed.json` 自动初始化，浏览、搜索、API 均正常可用
+- **内容更新**：修改 `content/seed.json`（或本地导入后同步）并提交推送，Netlify 会重新构建部署
+
+### 部署模式内容限制（如实说明）
+
+- 服务端数据库为临时目录、不跨实例持久：通过 API 的写路径本就不对外开放，收藏、下载等浏览器端功能不受影响（收藏保存在 localStorage）
+- 自动采集仍未启用，线上内容 = 仓库内种子内容
+- 需要完整本地体验（可导入新内容）请使用上面的本地部署方式
+
 ## 浏览与日期切换
 
 首页（`/`）自带**期次日期导航**：页面以列表形式列出所有已有期次，点击日期即可切换查看对应一天的笑话，支持 `/?date=YYYY-MM-DD` 直达。默认展示最新有内容的一期。该导航为现有功能，无需额外配置。
@@ -68,7 +83,7 @@ npm run content:import -- path/to/issue.json
 
 ## 存储
 
-Node 24 自带 `node:sqlite`（DatabaseSync），库文件默认 `data/jokes.sqlite`（已 gitignore），可用环境变量 `JOKES_DB_PATH` 指定其他路径（测试/持久化）。**部署时需持久磁盘**保存该文件。种子 `content/seed.json` 只在真正空库时初始化一次，之后的修改仅由显式 `content:import` 控制。全部 SQL 集中在 `lib/store.mjs`（CLI 与网站共用），`lib/db.ts` 为 server-only 包装。
+Node 24 自带 `node:sqlite`（DatabaseSync），库文件默认 `data/jokes.sqlite`（已 gitignore），可用环境变量 `JOKES_DB_PATH` 指定其他路径（测试/持久化，优先级最高）；未设置时通过站点元数据（`NETLIFY=true`，或 `SITE_ID` + `SITE_NAME` 同时存在）识别 Netlify 运行时并自动回退系统临时目录。种子 `content/seed.json` 只在真正空库时初始化一次，之后的修改仅由显式 `content:import` 控制。全部 SQL 集中在 `lib/store.mjs`（CLI 与网站共用），`lib/db.ts` 为 server-only 包装。
 
 ## 技能包
 
