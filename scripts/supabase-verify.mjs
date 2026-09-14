@@ -114,8 +114,11 @@ function qs(entries) {
   }
   return sp.toString();
 }
+// in.() 括号上下文内双引号是官方转义机制（处理逗号等保留字符），保留 JSON.stringify；
+// 裸顶层 eq 过滤的值按字面量解析，加引号会被 PostgREST 当作值的一部分而查不到
+// （见官方文档 Horizontal Filtering / Logical operators），故 eq 一律用裸值。
 const inOp = (arr) => `in.(${arr.map((v) => JSON.stringify(v)).join(",")})`;
-const eqId = (id) => `eq.${JSON.stringify(id)}`;
+const eqId = (id) => `eq.${id}`;
 
 async function countRows(cfg, table, search) {
   const { contentRange } = await rest(cfg, `${table}?${search}`, { prefer: "count=exact" });
@@ -130,7 +133,7 @@ const assocRows = async (issueDate, cfg = writeCfg) =>
     cfg,
     `joke_issue_jokes?${qs([
       ["select", "joke_id,position"],
-      ["issue_date", `eq.${JSON.stringify(issueDate)}`],
+      ["issue_date", `eq.${issueDate}`],
       ["order", "position.asc"],
     ])}`,
   )).data ?? [];
@@ -369,7 +372,25 @@ try {
   jokeIds.push(xId);
   let writeErr;
   try {
-    await rest(readCfg, "joke_jokes", { method: "POST", body: testJoke(xId, "相声") });
+    // 直接 REST 写必须用真实表字段（扁平 source_label/source_url/source_kind），
+    // 不能传领域对象的嵌套 source：否则 PostgREST 先报 400 unknown column，
+    // 权限拒绝（401/403）根本没被测到。
+    await rest(readCfg, "joke_jokes", {
+      method: "POST",
+      body: {
+        id: xId,
+        title: `${MARKER} ${xId}`,
+        body: `${MARKER} anon 写入探测`,
+        category: "验收",
+        format: "相声",
+        date: "2999-12-31",
+        featured: false,
+        source_label: "supabase-verify",
+        source_url: null,
+        source_kind: "example",
+        status: "published",
+      },
+    });
   } catch (e) {
     writeErr = e;
   }
