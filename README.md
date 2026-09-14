@@ -42,7 +42,7 @@ npm start          # http://127.0.0.1:4310
 仓库根目录的 `netlify.toml` 已完成适配，推送到 GitHub 后在 Netlify 关联该仓库即可自动连续部署（主分支 `main`）：
 
 - **构建**：`npm run build`，Node 24（`NODE_VERSION=24`，满足 `node:sqlite` 要求）。注意：`netlify.toml` 中的环境变量**仅构建期生效，不进入 Functions 运行时**（官方环境变量文档）；运行时通过平台注入的站点元数据（`NETLIFY=true` / `SITE_ID` + `SITE_NAME`）识别 Netlify 环境，自动回退临时目录 SQLite
-- **框架适配**：Netlify 官方 OpenNext 运行时自动支持 Next.js 16，无需额外安装插件
+- **框架适配**：通过 `netlify.toml` 显式启用官方 `@netlify/plugin-nextjs` 适配器，兼容源码上传构建与 Git 构建
 - **数据**：Netlify 函数无持久磁盘，部署后为**只读种子演示**——SQLite 库在函数实例临时目录从打包内嵌的 `content/seed.json` 自动初始化，浏览、搜索、API 均正常可用
 - **内容更新**：修改 `content/seed.json`（或本地导入后同步）并提交推送，Netlify 会重新构建部署
 
