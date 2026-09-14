@@ -1,0 +1,21 @@
+node_modules/
+.next/
+data/
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+.DS_Store
+next-env.d.ts
+
+# environment secrets
+.env
+.env.local
+.env.*.local
+
+# typescript incremental build cache
+*.tsbuildinfo
+
+.env.*
+!.env.example
+.playwright-cli/

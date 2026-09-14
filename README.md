@@ -1,0 +1,79 @@
+# 每日笑话（joke-hub）
+
+Next.js App Router + TypeScript 的轻量中文笑话小站。
+
+> **当前状态（如实说明）**：站点内容为**已审核的演示内容**（`content/seed.json`，12 条），自动采集调度**未启用**——仓库内没有任何定时任务、爬虫或采集脚本在运行。新内容只能通过手动执行 `content:import` 导入。
+
+## 界面预览
+
+按日期查看每天的内容，点击目录跳到对应笑话。
+
+![每日内容界面](docs/daily-preview.png)
+
+![笑话库与筛选](docs/library-preview.png)
+
+## 环境要求
+
+- **Node.js 24+**（必须：存储层依赖 Node 24 内置的 `node:sqlite`，低版本无法启动）
+- npm 10+
+
+可用 `nvm use` 读取仓库内的 `.nvmrc` 自动切换版本。
+
+## 本地部署
+
+```bash
+git clone https://github.com/wekobear/joke-hub.git
+cd joke-hub
+npm ci             # 按 package-lock.json 精确安装依赖
+npm run dev        # 开发模式，http://127.0.0.1:4310
+```
+
+生产构建与启动：
+
+```bash
+npm run build
+npm start          # http://127.0.0.1:4310
+```
+
+首次启动时，若数据库为空会自动从 `content/seed.json` 幂等导入演示内容（只初始化一次）。
+
+## 浏览与日期切换
+
+首页（`/`）自带**期次日期导航**：页面以列表形式列出所有已有期次，点击日期即可切换查看对应一天的笑话，支持 `/?date=YYYY-MM-DD` 直达。默认展示最新有内容的一期。该导航为现有功能，无需额外配置。
+
+另有页面：
+
+- `/library` — 笑话库、搜索、筛选与收藏（收藏保存在当前浏览器）
+- `/jokes/[id]` — 单条笑话详情
+- `/skill` — 技能包介绍与下载
+
+## 内容导入
+
+```bash
+npm run content:import -- path/to/issue.json
+```
+
+- 增量 upsert：旧条目保留、同 id 覆盖
+- 事务校验：非法文件整体回滚，不影响已有数据
+- 导入文件需符合 `lib/content-schema.ts` 定义的格式，导入器会在写入前验证整个文件；`npm run issue:check` 仅检查仓库自带的首期内容
+
+## 只读 API
+
+- `GET /api/v1/jokes?q=&category=&format=&page=1&limit=20` → `{items,total,page,limit}`（limit ≤ 50，q ≤ 100 字符；`favorites=` 空值表示「空收藏集合」，返回空结果）
+- `GET /api/v1/daily?date=YYYY-MM-DD` → `{issue,items}`；不带 date 返回最新有内容一期；无效期次 404
+- `GET /api/v1/jokes/[id]` → `{item}`
+- `GET /api/v1/random` → `{item}`（仅短笑话）
+
+非法分页 / 日期返回 400。
+
+## 存储
+
+Node 24 自带 `node:sqlite`（DatabaseSync），库文件默认 `data/jokes.sqlite`（已 gitignore），可用环境变量 `JOKES_DB_PATH` 指定其他路径（测试/持久化）。**部署时需持久磁盘**保存该文件。种子 `content/seed.json` 只在真正空库时初始化一次，之后的修改仅由显式 `content:import` 控制。全部 SQL 集中在 `lib/store.mjs`（CLI 与网站共用），`lib/db.ts` 为 server-only 包装。
+
+## 技能包
+
+`public/downloads/jokes-v0.5.0.zip` 为现有真实 Skill 包，/skill 页面提供下载，并在页面上展示两条用途路线（网页订阅浏览 / 导入本地 Skill 使用）。不提供在线打包生成命令。`public/examples/` 下为真实演示视频。
+
+## 许可
+
+代码以 [MIT License](./LICENSE) 许可发布。种子内容与下载包中的笑话文本、演示视频等外部引用内容的权利归原作者所有，MIT 许可不覆盖这些内容——再分发前请自行确认相应授权。

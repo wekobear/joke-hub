@@ -1,0 +1,30 @@
+{
+  "name": "joke-hub",
+  "version": "0.2.0",
+  "private": true,
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "next dev -H 127.0.0.1 -p 4310",
+    "build": "next build",
+    "start": "next start -H 127.0.0.1 -p 4310",
+    "typecheck": "tsc --noEmit",
+    "content:import": "node scripts/content-import.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "selftest": "node scripts/selftest.mjs",
+    "api-test": "node scripts/api-test.mjs",
+    "issue:check": "node scripts/issue-check.mjs"
+  },
+  "dependencies": {
+    "next": "16.3.5",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "typescript": "^5.9.0"
+  }
+}
