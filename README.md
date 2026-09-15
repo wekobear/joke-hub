@@ -2,7 +2,7 @@
 
 Next.js App Router + TypeScript 的轻量中文笑话小站。
 
-> **当前状态（如实说明）**：站点内容为**已审核的演示内容**（`content/seed.json`，12 条）。每日自动流水线（本地 claude 生产 → 独立校验 → 门禁发布，见下文）已实现并通过本地测试，但按日期调度**默认未安装**，云端（Supabase）项目**尚未创建**——当前线上形态仍为演示内容。
+> **当前状态（如实说明）**：站点已上线 https://wekobear-joke-hub.netlify.app ，线上读取走 Supabase；2026-09-15 首期（11 条）发布与定时任务实际运行验收均已通过。本仓库提供完整模板与脚本，部署者需自行创建自己的 Supabase 项目、配置 Netlify 并安装调度；仓库不含任何私有凭据。
 
 ## 界面预览
 
@@ -37,19 +37,19 @@ npm start          # http://127.0.0.1:4310
 
 首次启动时，若数据库为空会自动从 `content/seed.json` 幂等导入演示内容（只初始化一次）。
 
-## Netlify 部署（未配置 Supabase 时为演示模式）
+## Netlify 部署
 
-仓库根目录的 `netlify.toml` 已完成适配，推送到 GitHub 后在 Netlify 关联该仓库即可自动连续部署（主分支 `main`）：
+仓库根目录的 `netlify.toml` 已完成适配。当前站点通过 Netlify 官方插件从源码构建部署，**未关联 Git 自动构建**——push 不会自动触发部署；普通部署者可在 Netlify 中自行关联 GitHub 仓库启用连续部署（主分支 `main`）：
 
 - **构建**：`npm run build`，Node 24（`NODE_VERSION=24`，满足 `node:sqlite` 要求）。注意：`netlify.toml` 中的环境变量**仅构建期生效，不进入 Functions 运行时**（官方环境变量文档）；运行时通过平台注入的站点元数据（`NETLIFY=true` / `SITE_ID` + `SITE_NAME`）识别 Netlify 环境，自动回退临时目录 SQLite
 - **框架适配**：通过 `netlify.toml` 显式启用官方 `@netlify/plugin-nextjs` 适配器，兼容源码上传构建与 Git 构建
-- **数据**：Netlify 函数无持久磁盘，部署后为**只读种子演示**——SQLite 库在函数实例临时目录从打包内嵌的 `content/seed.json` 自动初始化，浏览、搜索、API 均正常可用
-- **内容更新**：修改 `content/seed.json`（或本地导入后同步）并提交推送，Netlify 会重新构建部署
+- **数据**：Netlify 函数无持久磁盘。未配置 Supabase 时为只读种子演示（SQLite 库在函数实例临时目录从打包内嵌的 `content/seed.json` 自动初始化）；Supabase 只读凭据（`SUPABASE_URL` + publishable key）已在站点设置中配置，运行时读取自动走云端 REST，受 RLS 限制仅可见 published 内容
+- **内容更新**：配置 Supabase 后，新内容经每日流水线入库即立即对线上展示，无需重新部署；未配置 Supabase 的 SQLite 演示模式下，修改 `content/seed.json` 后需重新构建部署才会生效
 
-### 部署模式内容限制（如实说明）
+### 部署模式内容说明（如实说明）
 
-- 服务端数据库为临时目录、不跨实例持久：通过 API 的写路径本就不对外开放，收藏、下载等浏览器端功能不受影响（收藏保存在 localStorage）
-- 自动采集仍未启用，线上内容 = 仓库内种子内容
+- 当前线上已配置 Supabase 只读读取：浏览、搜索、API 走云端 REST，受 RLS 限制仅可见 published 内容；收藏、下载等浏览器端功能不受影响（收藏保存在 localStorage）
+- 每日新内容由自动流水线发布（见下文）；仓库内种子内容仍保留为初始数据
 - 需要完整本地体验（可导入新内容）请使用上面的本地部署方式
 
 ## 浏览与日期切换
@@ -92,7 +92,7 @@ Node 24 自带 `node:sqlite`（DatabaseSync），库文件默认 `data/jokes.sql
 
 ### 1. 创建 Supabase 项目
 
-在 [supabase.com](https://supabase.com) 创建免费项目（无需信用卡，无定时付费服务）。
+在 [supabase.com](https://supabase.com) 创建免费项目（无需信用卡，无定时付费服务）。每个部署者需创建并使用自己的项目，仓库不共享任何云端实例。
 
 ### 2. 应用 SQL 迁移
 
@@ -116,7 +116,7 @@ cp .env.example .env   # 填入以下三项（Dashboard → Project Settings →
 | `SUPABASE_ANON_KEY`（或 `SUPABASE_PUBLISHABLE_KEY`） | 站点读取 | 受 RLS 限制仅 published；legacy JWT 与新版 publishable key 均支持 |
 | `SUPABASE_SERVICE_KEY`（Secret key） | 仅 CLI 导入 | 服务端专用，绝不进入前端或网站运行时 |
 
-本地开发 Next.js 会自动读取 `.env`；Netlify 上仅配置 `SUPABASE_URL` 与读取用的 `SUPABASE_ANON_KEY`（或 `SUPABASE_PUBLISHABLE_KEY`），范围包含 Functions。`SUPABASE_SERVICE_KEY` 只留在受控的本地入库环境，不配置到网站。入库和验收命令会自动加载当前目录的 `.env`。
+本地开发 Next.js 会自动读取 `.env`；Netlify 上仅配置 `SUPABASE_URL` 与读取用的 `SUPABASE_ANON_KEY`（或 `SUPABASE_PUBLISHABLE_KEY`），范围包含 Functions。`SUPABASE_SERVICE_KEY` 只留在受控的本地入库环境，不配置到网站——部署者需自行配置包含这三项的自己的 `.env`。入库和验收命令会自动加载当前目录的 `.env`。
 
 ### 4. 内容入库
 
@@ -189,15 +189,18 @@ npm run daily -- --status        # 查看该日期运行状态
 - **退出码**：0 成功（含幂等）/ 2 校验拒绝 / 3 门禁未到 / 4 其他错误
 
 产品运行状态与日志全部在 `data/daily-runs/<date>/`（run-*.json / latest.json /
-package.json / pipeline.log），不依赖任何共享临时路径。调度示例（launchd /
-cron，默认未安装）见 `scheduling/README.md`。测试：
+package.json / pipeline.log），不依赖任何共享临时路径。调度模板（launchd /
+cron）见 `scheduling/README.md`：当前维护机器已启用 launchd 调度（07:25/08:25
+生产准备、09:00 发布、09:37/10:07 重试），运行需该 Mac 保持登录状态；开源部署
+**不会自动开启**任何调度，需按文档自行安装。测试：
 
 ```bash
 npm run daily-selftest   # 合同自测：注入生产/审稿，覆盖拒绝/门禁/幂等/覆盖保护/锁
 ```
 
-云端尚未创建时流程自动落到本地 SQLite 模式（门禁仅本机预检），可验证生产与
-校验链路，但**不构成端到端验收**。
+首次生产发布验收已完成（2026-09-15 期次经 Supabase 云端门禁发布，数据层读
+回核验与线上 API 逐条比对均通过）。未配置 Supabase 环境时流程仍会落到本地
+SQLite 模式（门禁仅本机预检），可验证生产与校验链路，但**不构成端到端验收**。
 
 ## 技能包
 

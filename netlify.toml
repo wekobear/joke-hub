@@ -1,13 +1,14 @@
 # Netlify 部署配置：Next.js 16 使用官方 OpenNext 运行时适配。
-# 本站为只读种子演示：SQLite 数据库在函数临时目录按 content/seed.json 初始化，
-# 收藏等个人数据仍存于浏览器 localStorage，服务端数据不跨实例持久。
+# 生产读取走 Supabase：运行时凭据（SUPABASE_URL + 只读 publishable key）由
+# Netlify 站点设置注入，不写入本文件；service key 绝不配置到 Netlify。
+# JOKES_DB_PATH 仅在构建期（预渲染/类型检查）生效，与本地默认 data/ 目录
+# 解耦以避开只读工作目录；未配置 Supabase 的构建仍回退临时目录 SQLite 演示模式。
 [build]
   command = "npm run build"
   publish = ".next"
 
 [build.environment]
   NODE_VERSION = "24"
-  # 构建期（预渲染/类型检查等）与本地默认 data/ 目录解耦，避免只读工作目录
   JOKES_DB_PATH = "/tmp/joke-hub-demo.sqlite"
 
 # 显式配置以兼容源码上传构建和 Git 构建。

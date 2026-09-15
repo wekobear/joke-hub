@@ -19,10 +19,18 @@ claude CLI 运行在本地机器：调度器在本地触发 `npm run daily`，�
 
 ## 方式一：launchd（macOS）
 
-编辑 `com.jokehub.daily.plist` 中的路径后：
+`scheduling/com.jokehub.daily.plist` 是**通用模板**（默认未安装）：仓库内的
+提交版本只含占位路径，安装前需按本机实际环境修改——仓库路径、node/npm/claude
+所在目录（launchd 不加载用户 shell 配置，PATH 要在 ProgramArguments 里显式
+export）、触发时刻（07:25/08:25 生产准备 + 09:00/09:37/10:07 门禁后发布重试）。
+`JOKE_SITE_URL` 留空即可由 `npm run daily` 自动读取仓库 `.env`。
+
+**含私有路径的本机安装副本请放在仓库外**（如 `/tmp` 或直接填好后再拷贝到
+`~/Library/LaunchAgents`），不要提交回公开仓库。安装时先查重再加载：
 
 ```bash
-cp scheduling/com.jokehub.daily.plist ~/Library/LaunchAgents/
+launchctl list | grep jokehub        # 应无输出，避免重复任务
+cp <本机填好的>.plist ~/Library/LaunchAgents/com.jokehub.daily.plist
 launchctl load ~/Library/LaunchAgents/com.jokehub.daily.plist
 ```
 

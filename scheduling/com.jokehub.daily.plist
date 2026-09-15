@@ -1,13 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  每日笑话流水线 launchd 示例（默认未安装）。
-  安装前把 /path/to/joke-hub 改为实际仓库路径；launchd 按系统本地时区解释
-  StartCalendarInterval，机器非上海时区时请自行换算（详见 scheduling/README.md）。
-  07:20/08:05 两轮为生产准备（未到门禁时以 exit 3 结束，内容幂等就绪）；
-  09:00/09:37/10:07 三轮在门禁后发布并核验（发布有分钟级耗时，不承诺秒级
-  准点）；已发布日重跑为幂等核验。调度环境须通过 EnvironmentVariables 把
-  JOKE_SITE_URL 设为实际网站地址，否则核验只探测 localhost 会失败。
+  每日笑话流水线 launchd 模板（通用示例，默认未安装）。
+
+  安装前请把 /path/to/joke-hub 改为实际仓库路径，并确保 launchd 环境能找到
+  node / npm / claude（推荐在 ProgramArguments 内显式 export PATH，因为 launchd
+  不加载用户 shell 配置）。launchd 按系统本地时区解释 StartCalendarInterval，
+  机器非上海时区时请自行换算（详见 scheduling/README.md；即使设错，发布门禁
+  也会拦住提前发布，代价只是浪费一轮生产，内容幂等复用）。
+
+  触发时刻：07:25/08:25 两轮生产准备（未到门禁时以 exit 3 结束，内容幂等就
+  绪）；09:00/09:37/10:07 三轮在门禁后发布并核验（发布有分钟级耗时，不承诺
+  秒级准点）；已发布日重跑为幂等核验。
+
+  JOKE_SITE_URL：发布核验探测的网站地址。可在本 plist 的 EnvironmentVariables
+  设置，也可留空由 `npm run daily` 自动读取仓库 .env（推荐后者）；远程站点必
+  须是实际地址，默认 localhost 探测会失败。
+
+  本模板面向公开仓库，请勿在提交版本中写入私有路径或真实站点地址；本机安装
+  用副本请放在仓库外（如 /tmp 或 ~/Library/LaunchAgents）。
 -->
 <plist version="1.0">
 <dict>
@@ -16,13 +27,13 @@
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>cd /path/to/joke-hub &amp;&amp; npm run daily</string>
+    <string>-c</string>
+    <string>export PATH="/path/to/node/bin:/path/to/dir/with/claude:$PATH" &amp;&amp; cd /path/to/joke-hub &amp;&amp; npm run daily</string>
   </array>
   <key>StartCalendarInterval</key>
   <array>
-    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>20</integer></dict>
-    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Hour</key><integer>7</integer><key>Minute</key><integer>25</integer></dict>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>25</integer></dict>
     <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>0</integer></dict>
     <dict><key>Hour</key><integer>9</integer><key>Minute</key><integer>37</integer></dict>
     <dict><key>Hour</key><integer>10</integer><key>Minute</key><integer>7</integer></dict>
