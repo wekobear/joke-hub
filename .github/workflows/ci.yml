@@ -1,0 +1,25 @@
+# 基本验证：类型检查 + 库层自测 + 每日流水线合同自测 + API 回归。
+# 全部为本地测试（无云凭据、无 claude CLI 依赖：daily-selftest 走依赖注入）。
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run selftest
+      - run: npm run daily-selftest
+      - run: node scripts/hash-stable-regression.mjs
+      - run: npm run build
+      - run: npm run api-test
