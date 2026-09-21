@@ -21,7 +21,6 @@ export default function JokeCard({
   const detailHref = `/jokes/${encodeURIComponent(joke.id)}`;
   const paragraphs = joke.body.split(/\n{2,}|\n/);
   const shown = preview ? paragraphs.slice(0, 2).join("\n") : joke.body;
-  const truncated = preview && paragraphs.length > 2;
   return (
     <article id={`joke-${joke.id}`} className="h-full scroll-mt-24">
       <Card className="h-full">
@@ -50,14 +49,6 @@ export default function JokeCard({
             </Chip>
           </div>
           <div className="flex items-center gap-2">
-            {truncated && (
-              <Link
-                href={detailHref}
-                className="text-sm text-accent hover:underline"
-              >
-                阅读全文 →
-              </Link>
-            )}
             <FavoriteButton
               active={fav}
               onClick={() => onToggleFav(joke.id)}
