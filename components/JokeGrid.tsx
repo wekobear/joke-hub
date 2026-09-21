@@ -14,7 +14,7 @@ export default function JokeGrid({
 }) {
   const { favs, toggle } = useFavorites();
   return (
-    <div className="grid">
+    <div className="grid grid-cols-1 items-stretch gap-5 sm:grid-cols-2">
       {shorts.map((j) => (
         <JokeCard key={j.id} joke={j} favs={favs} onToggleFav={toggle} />
       ))}

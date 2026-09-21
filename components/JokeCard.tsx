@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import type { Joke } from "@/lib/db";
+import { buttonVariants, Card, Chip } from "@heroui/react";
 import FavoriteButton from "./FavoriteButton";
 
 export default function JokeCard({
@@ -17,35 +18,59 @@ export default function JokeCard({
   preview?: boolean;
 }) {
   const fav = !!favs?.includes(joke.id);
+  const detailHref = `/jokes/${encodeURIComponent(joke.id)}`;
   const paragraphs = joke.body.split(/\n{2,}|\n/);
   const shown = preview ? paragraphs.slice(0, 2).join("\n") : joke.body;
   const truncated = preview && paragraphs.length > 2;
   return (
-    <article id={`joke-${joke.id}`} className="card joke-card" style={{ scrollMarginTop: 84 }}>
-      <h3>
-        <Link href={`/jokes/${encodeURIComponent(joke.id)}`}>{joke.title}</Link>
-      </h3>
-      <p className="joke-body">{shown}</p>
-      <footer className="joke-card-footer">
-        <div className="meta">
-          <span className="pill">{joke.format}</span>
-          <span className="pill">{joke.category}</span>
-        </div>
-        <div className="joke-card-actions">
-          {truncated && (
+    <article id={`joke-${joke.id}`} className="h-full scroll-mt-24">
+      <Card className="h-full">
+        <Card.Header>
+          <Card.Title>
             <Link
-              href={`/jokes/${encodeURIComponent(joke.id)}`}
-              className="joke-card-read-more"
+              href={detailHref}
+              className="transition-colors hover:text-accent"
             >
-              阅读全文 →
+              {joke.title}
             </Link>
-          )}
-          <FavoriteButton active={fav} onClick={() => onToggleFav(joke.id)} />
-          <Link href={`/jokes/${encodeURIComponent(joke.id)}`} className="btn">
-            详情
-          </Link>
-        </div>
-      </footer>
+          </Card.Title>
+        </Card.Header>
+        <Card.Content className="mt-1">
+          <p className="whitespace-pre-wrap text-[15px] leading-relaxed text-foreground/80">
+            {shown}
+          </p>
+        </Card.Content>
+        <Card.Footer className="mt-auto flex-wrap justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Chip size="sm" variant="soft" color="accent">
+              <Chip.Label>{joke.format}</Chip.Label>
+            </Chip>
+            <Chip size="sm" variant="soft">
+              <Chip.Label>{joke.category}</Chip.Label>
+            </Chip>
+          </div>
+          <div className="flex items-center gap-2">
+            {truncated && (
+              <Link
+                href={detailHref}
+                className="text-sm text-accent hover:underline"
+              >
+                阅读全文 →
+              </Link>
+            )}
+            <FavoriteButton
+              active={fav}
+              onClick={() => onToggleFav(joke.id)}
+            />
+            <Link
+              href={detailHref}
+              className={buttonVariants({ size: "sm", variant: "secondary" })}
+            >
+              详情
+            </Link>
+          </div>
+        </Card.Footer>
+      </Card>
     </article>
   );
 }

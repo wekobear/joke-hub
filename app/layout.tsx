@@ -16,12 +16,24 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <script>{themeBootstrap}</script>
       </head>
-      <body>
+      <body className="min-h-screen bg-background text-foreground antialiased">
         <TopNav />
         {children}
-        <footer className="footer">
-          <div className="container">
-            每日笑话 · v0.1.0 · 已审核演示内容，自动采集调度未启动
+        <footer className="mt-8 border-t border-border">
+          <div className="container flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-6 text-[13px] text-muted">
+            <span>每日笑话 · v0.3.0 · 已审核演示内容，自动采集调度未启动</span>
+            <span>
+              吉祥物 blob 灵感来自{" "}
+              <a
+                href="https://github.com/jeremy-prt/bloub"
+                target="_blank"
+                rel="noreferrer"
+                className="underline decoration-dotted underline-offset-4 hover:text-accent"
+              >
+                bloub
+              </a>
+              （MIT）
+            </span>
           </div>
         </footer>
       </body>

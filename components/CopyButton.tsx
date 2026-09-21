@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { Button } from "@heroui/react";
 
 export default function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
@@ -14,8 +15,8 @@ export default function CopyButton({ text }: { text: string }) {
   }
 
   return (
-    <button className="btn" onClick={copy}>
-      {copied ? "已复制" : "复制全文"}
-    </button>
+    <Button size="sm" variant="secondary" onPress={copy}>
+      {copied ? "已复制，快去逗朋友 ✓" : "复制全文"}
+    </Button>
   );
 }

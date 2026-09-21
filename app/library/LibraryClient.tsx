@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Joke } from "@/lib/db";
+import { Button, SearchField, Spinner } from "@heroui/react";
 import { useFavorites } from "@/components/favorites";
 import JokeCard from "@/components/JokeCard";
+import Bloub from "@/components/Bloub";
 
 const PAGE_SIZE = 20;
 // 与 API 限制一致：/api/v1/jokes 的 q 最长 100 字符
@@ -119,117 +121,167 @@ export default function LibraryClient({
   }, [randomBusy, router]);
 
   return (
-    <main className="container">
-      <h1 className="page-title">笑话库</h1>
-      <p className="subtitle">全文搜索、题材与形式筛选，共 {data?.total ?? 0} 则</p>
+    <main className="container pb-20">
+      <h1 className="mt-4 mb-1 text-[22px] font-semibold">笑话库</h1>
+      <p className="mb-5 text-sm text-muted">
+        全文搜索、题材与形式筛选，共 {data?.total ?? 0} 则
+      </p>
 
-      <div className="toolbar">
-        <input
-          className="search-input"
-          placeholder="搜索标题或正文…"
+      <div className="flex flex-wrap items-center gap-3">
+        <SearchField
           aria-label="搜索标题或正文"
           value={q}
-          maxLength={Q_MAX}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <button
-          className={`btn${favOnly ? " active" : ""}`}
-          onClick={() => setFavOnly((v) => !v)}
+          onChange={setQ}
+          fullWidth
+          className="min-w-[200px] flex-1"
+        >
+          <SearchField.Group>
+            <SearchField.SearchIcon />
+            <SearchField.Input maxLength={Q_MAX} placeholder="搜索标题或正文…" />
+            <SearchField.ClearButton />
+          </SearchField.Group>
+        </SearchField>
+        <Button
+          size="sm"
+          variant={favOnly ? "primary" : "outline"}
+          className="rounded-full"
+          aria-pressed={favOnly}
+          onPress={() => setFavOnly((v) => !v)}
         >
           ★ 只看收藏
-        </button>
-        <button className="btn" disabled={randomBusy} onClick={goRandom}>
-          {randomBusy ? "随机中…" : "🎲 随机一则"}
-        </button>
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          isPending={randomBusy}
+          onPress={goRandom}
+        >
+          {({ isPending }) => (
+            <>
+              {isPending ? <Spinner color="current" size="sm" /> : null}
+              {isPending ? "骰子转着…" : "🎲 随机一则"}
+            </>
+          )}
+        </Button>
       </div>
 
       {randomError && (
-        <p className="feedback error" role="alert">
+        <p role="alert" className="mt-4 flex flex-wrap items-center gap-3 text-sm text-danger">
           {randomError}
-          <button className="btn" onClick={goRandom}>
+          <Button size="sm" variant="outline" onPress={goRandom}>
             重试
-          </button>
+          </Button>
         </p>
       )}
 
-      <div className="rail" aria-label="形式筛选">
-        <button className={!format ? "active" : ""} onClick={() => setFormat("")}>
+      {/* 形式 / 题材筛选 */}
+      <div className="mt-4 flex flex-wrap gap-2" aria-label="形式筛选">
+        <FilterPill active={!format} onPress={() => setFormat("")}>
           全部形式
-        </button>
+        </FilterPill>
         {formats.map((f) => (
-          <button
+          <FilterPill
             key={f}
-            className={format === f ? "active" : ""}
-            onClick={() => setFormat(f === format ? "" : f)}
+            active={format === f}
+            onPress={() => setFormat(f === format ? "" : f)}
           >
             {f}
-          </button>
+          </FilterPill>
         ))}
       </div>
-      <div className="rail" aria-label="题材筛选">
-        <button className={!category ? "active" : ""} onClick={() => setCategory("")}>
+      <div className="mt-2.5 flex flex-wrap gap-2" aria-label="题材筛选">
+        <FilterPill active={!category} onPress={() => setCategory("")}>
           全部题材
-        </button>
+        </FilterPill>
         {categories.map((c) => (
-          <button
+          <FilterPill
             key={c}
-            className={category === c ? "active" : ""}
-            onClick={() => setCategory(c === category ? "" : c)}
+            active={category === c}
+            onPress={() => setCategory(c === category ? "" : c)}
           >
             {c}
-          </button>
+          </FilterPill>
         ))}
       </div>
 
-      <div className="page-body">
-        <div className="content">
-          {error && (
-            <div className="empty" role="alert">
-              <p>{error}</p>
-              <button
-                className="btn primary"
-                disabled={loading}
-                onClick={() => load(lastPage.page, lastPage.append)}
-              >
-                重试
-              </button>
-            </div>
-          )}
+      <div className="mt-7">
+        {error && (
+          <div role="alert" className="flex flex-col items-center gap-4 py-14 text-center">
+            <Bloub size={90} mood="idle" />
+            <p className="text-[15px] text-muted">{error}</p>
+            <Button
+              variant="primary"
+              isDisabled={loading}
+              onPress={() => load(lastPage.page, lastPage.append)}
+            >
+              重试
+            </Button>
+          </div>
+        )}
 
-          {!error && !data && loading && <p className="feedback">加载中…</p>}
+        {!error && !data && loading && (
+          <p className="flex items-center justify-center gap-2.5 py-10 text-sm text-muted">
+            <Spinner size="sm" />
+            加载中…
+          </p>
+        )}
 
-          {!error && data && data.items.length === 0 ? (
-            <div className="empty">
-              <p>没有符合条件的笑话。</p>
-              {hasFilter && (
-                <button className="btn primary" onClick={clearAll}>
-                  清空筛选
-                </button>
-              )}
+        {!error && data && data.items.length === 0 ? (
+          <div className="flex flex-col items-center gap-4 py-14 text-center">
+            <Bloub size={90} mood="sleep" />
+            <p className="text-[15px] text-muted">
+              一个笑话都没匹配到，blob 也无话可说。
+            </p>
+            {hasFilter && (
+              <Button variant="primary" onPress={clearAll}>
+                清空筛选
+              </Button>
+            )}
+          </div>
+        ) : (
+          data && (
+            <div className="grid grid-cols-1 items-stretch gap-5 sm:grid-cols-2">
+              {data.items.map((j) => (
+                <JokeCard key={j.id} joke={j} favs={favs} onToggleFav={toggle} />
+              ))}
             </div>
-          ) : (
-            data && (
-              <div className="grid">
-                {data.items.map((j) => (
-                  <JokeCard key={j.id} joke={j} favs={favs} onToggleFav={toggle} />
-                ))}
-              </div>
-            )
-          )}
+          )
+        )}
 
-          {data && data.items.length < data.total && (
-            <div style={{ textAlign: "center", marginTop: 28 }}>
-              <button
-                className="btn"
-                disabled={loading}
-                onClick={() => load(data!.page + 1, true)}
-              >
-                {loading ? "加载中…" : `加载更多（${data.total - data.items.length} 则）`}
-              </button>
-            </div>
-          )}
-        </div>
+        {data && data.items.length < data.total && (
+          <div className="mt-8 flex justify-center">
+            <Button
+              variant="secondary"
+              isDisabled={loading}
+              onPress={() => load(data!.page + 1, true)}
+            >
+              {loading ? "加载中…" : `加载更多（${data.total - data.items.length} 则）`}
+            </Button>
+          </div>
+        )}
       </div>
     </main>
+  );
+}
+
+function FilterPill({
+  active,
+  onPress,
+  children,
+}: {
+  active: boolean;
+  onPress: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <Button
+      size="sm"
+      variant={active ? "primary" : "outline"}
+      className="rounded-full"
+      aria-pressed={active}
+      onPress={onPress}
+    >
+      {children}
+    </Button>
   );
 }
