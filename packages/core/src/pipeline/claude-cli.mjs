@@ -36,6 +36,7 @@ function childEnv() {
  * 以 -p（print）模式运行 claude CLI 并解析 JSON 输出，返回模型正文。
  */
 export function runClaudeText(prompt, { timeoutMs = 600_000, label = "claude" } = {}) {
+  const startedAt = Date.now();
   return new Promise((resolve, reject) => {
     const child = spawn(
       "claude",
@@ -106,7 +107,16 @@ export function runClaudeText(prompt, { timeoutMs = 600_000, label = "claude" } 
         reject(new ClaudeCliError(`${label} CLI 报错：${envelope.result ?? "(无详情)"}`, { stage: label }));
         return;
       }
-      resolve(String(envelope.result ?? ""));
+      // 调用元数据随正文一起返回（订阅制无按次账单，但耗时/用量/会话仍要可追溯）
+      resolve({
+        text: String(envelope.result ?? ""),
+        meta: {
+          durationMs: Date.now() - startedAt,
+          model: typeof envelope.model === "string" ? envelope.model : null,
+          sessionId: typeof envelope.session_id === "string" ? envelope.session_id : null,
+          usage: envelope.usage && typeof envelope.usage === "object" ? envelope.usage : null,
+        },
+      });
     });
   });
 }
@@ -119,14 +129,36 @@ export function extractJson(text, { label = "claude" } = {}) {
   let t = String(text).trim();
   const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/m.exec(t);
   if (fence) t = fence[1].trim();
-  const start = t.indexOf("{");
-  const end = t.lastIndexOf("}");
-  if (start >= 0 && end > start) {
-    try {
-      return JSON.parse(t.slice(start, end + 1));
-    } catch {
-      // 落入下方统一报错
+
+  // 1) 整体就是合法 JSON（最常见，且单元素数组不会被误切）
+  try {
+    return JSON.parse(t);
+  } catch {}
+
+  // 2) 前后有说明文字：按顶层结构（首个 [ 或 { 谁在前）取首尾切一版
+  //    （评审/改编输出数组、其余输出对象；切错时再试另一种）
+  const arrStart = t.indexOf("[");
+  const objStart = t.indexOf("{");
+  const tries = [];
+  if (arrStart >= 0 && (objStart < 0 || arrStart < objStart)) {
+    const e = t.lastIndexOf("]");
+    if (e > arrStart) tries.push(t.slice(arrStart, e + 1));
+    if (objStart >= 0) {
+      const oe = t.lastIndexOf("}");
+      if (oe > objStart) tries.push(t.slice(objStart, oe + 1));
     }
+  } else if (objStart >= 0) {
+    const oe = t.lastIndexOf("}");
+    if (oe > objStart) tries.push(t.slice(objStart, oe + 1));
+    if (arrStart >= 0) {
+      const ae = t.lastIndexOf("]");
+      if (ae > arrStart) tries.push(t.slice(arrStart, ae + 1));
+    }
+  }
+  for (const c of tries) {
+    try {
+      return JSON.parse(c);
+    } catch {}
   }
   throw new ClaudeCliError(`${label} 输出中找不到合法 JSON：${text.slice(0, 300)}`, { stage: label });
 }

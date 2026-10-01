@@ -1,7 +1,11 @@
 {
   "name": "joke-hub",
-  "version": "0.3.0",
+  "version": "0.5.0",
   "private": true,
+  "workspaces": [
+    "industry",
+    "packages/*"
+  ],
   "engines": {
     "node": ">=24.0.0"
   },
@@ -18,6 +22,8 @@
     "selftest": "node scripts/selftest.mjs",
     "api-test": "node scripts/api-test.mjs",
     "issue:check": "node scripts/issue-check.mjs",
+    "selection-eval": "node scripts/selection-eval.mjs",
+    "collect": "node --env-file-if-exists=.env scripts/collect.mjs",
     "supabase-verify": "node --env-file-if-exists=.env scripts/supabase-verify.mjs"
   },
   "dependencies": {

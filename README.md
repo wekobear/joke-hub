@@ -82,9 +82,55 @@ npm run content:import -- path/to/issue.json
 
 非法分页 / 日期返回 400。
 
+### 对外出口（v0.4.0 起，`industry/features.ts` 可开关）
+
+- `GET /feed.xml` — 日刊 RSS（最新一期全文，带 ETag 条件请求）
+- `GET /llms.txt` — 给大模型与爬虫的站点说明（内容结构、API 清单）
+- `GET /sitemap.xml` — 站点地图（静态页 + 全部期次 + 全部笑话详情页）
+- `GET /robots.txt` — 指向 sitemap
+
+四个出口读的都是与网页同一份公开读取层（`packages/core/src/publication.mjs`），
+看到的内容与站点一致；开关关闭时对应路由 404。
+
+## 多信源采集（v0.5.0 起）
+
+每期配比为 **8 条采集改编 + 2 条原创 + 1 段原创脱口秀**：外部信源的笑话经
+模型评审（好笑度/安全度打分 + 门槛）与本地化改编（英文内容翻译成自然中文、
+中文内容轻度润色）后进入每日刊，条目标注来源与原文链接（`kind=adapted`）；
+采集不足时自动降级为原创补足，公开 API 形状不变。信源清单（含实测状态）、
+架构说明与新增信源方法见 [docs/COLLECTION.md](docs/COLLECTION.md)。
+
+```bash
+npm run collect                 # 采集一轮：抓取 → 清洗 → 判重入库 → 模型评审
+npm run collect -- --no-judge   # 只采集不评审
+```
+
+## 代码结构（v0.4.0 起，npm workspaces）
+
+```
+industry/            配置包（改定位只改这里，不改代码）
+  site.ts            站名、文案、站点地址、首页每日一句
+  taxonomy.ts        分类白名单、配比（8 采集 + 2 原创 + 1 脱口秀）、长度边界、发布门禁
+  selection.ts       审稿量化门槛、采集门槛、查重参数（改前先跑 npm run selection-eval）
+  features.ts        出口开关（rss / llmsTxt / seo）
+  sources.json       采集信源注册表（json_api / json_list / csv_quote 三种读取器）
+  prompts/*.md       生产/修稿/审稿/采集评审/本地化改编提示词（{{var}} 模板 + 版本哈希）
+packages/core/       领域层
+  src/publication    公开读取层：web / API / RSS / llms.txt / sitemap 唯一数据源（只读）
+  src/pipeline       每日流水线：校验、审稿、门槛、认领、发布、判断事件落库
+  src/sources/       多信源采集：读取器、清洗预过滤、物料池、批量评审
+  src/store.mjs      SQLite 适配器
+  src/supabase-store.mjs  Supabase 适配器
+app/                 Next.js 应用（页面 + /api/v1 + 四个出口路由）
+```
+
+依赖方向：`app → core/publication（只读）`、`scripts → core/pipeline`、`core → industry`。
+管理操作（导入/认领/发布/审计写入）只存在于 `core/pipeline`，永不进入 web 侧。
+给 Agent 的仓库说明见 `AGENTS.md`。
+
 ## 存储
 
-Node 24 自带 `node:sqlite`（DatabaseSync），库文件默认 `data/jokes.sqlite`（已 gitignore），可用环境变量 `JOKES_DB_PATH` 指定其他路径（测试/持久化，优先级最高）；未设置时通过站点元数据（`NETLIFY=true`，或 `SITE_ID` + `SITE_NAME` 同时存在）识别 Netlify 运行时并自动回退系统临时目录。种子 `content/seed.json` 只在真正空库时初始化一次，之后的修改仅由显式 `content:import` 控制。全部 SQL 集中在 `lib/store.mjs`（CLI 与网站共用），`lib/db.ts` 为 server-only 包装。
+Node 24 自带 `node:sqlite`（DatabaseSync），库文件默认 `data/jokes.sqlite`（已 gitignore），可用环境变量 `JOKES_DB_PATH` 指定其他路径（测试/持久化，优先级最高）；未设置时通过站点元数据（`NETLIFY=true`，或 `SITE_ID` + `SITE_NAME` 同时存在）识别 Netlify 运行时并自动回退系统临时目录。种子 `content/seed.json` 只在真正空库时初始化一次，之后的修改仅由显式 `content:import` 控制。存储实现集中在 `packages/core/src/store.mjs`（SQLite）与 `packages/core/src/supabase-store.mjs`（云端），CLI 与网站共用；网站读取统一走公开读取层 `packages/core/src/publication.mjs`，`lib/db.ts` 只是 server-only 薄门面。
 
 ## Supabase 持久化（可选，0.3.0 起）
 
@@ -101,6 +147,8 @@ Node 24 自带 `node:sqlite`（DatabaseSync），库文件默认 `data/jokes.sql
 1. 初始 schema：`joke_jokes` / `joke_issues` / `joke_issue_jokes` / `joke_metadata` 四张表（独立于其他项目的表，均带 `joke_` 前缀）、RLS、仅 `service_role` 可执行的导入 RPC `joke_import_content`
 2. 每日流水线：运行表 `joke_daily_runs`（RLS 启用且无任何 policy，anon 不可见）、原子认领 RPC `joke_daily_claim` 与幂等发布 RPC `joke_daily_publish`（固定 09:00 Asia/Shanghai 门禁、按日期 advisory 事务锁、已发布内容覆盖保护）
 3. 分类计数 RPC `joke_category_counts`（DB 内 GROUP BY，公开读取路径）
+4. 判断账本（v0.4.0）：`joke_analyses`——每次审稿（通过/拒绝/失败）追加一行，含分数、量化门槛复核、提示词与规则版本哈希；RLS 启用、anon 不可读、`service_role` 仅 SELECT/INSERT（数据库层面 append-only）
+5. 采集物料池（v0.5.0）：`joke_materials`——外部信源候选笑话（正文、来源、指纹、评审分数、curation 状态）；RLS 启用、匿名不可见（刊前数据），`service_role` 可 SELECT/INSERT/UPDATE（状态流转需要）
 
 也可以用 Supabase CLI：`npx supabase link` 后 `npx supabase db push`。迁移只新增表/函数，不改动或删除既有数据。
 
@@ -158,7 +206,7 @@ draft 隔离（详情/搜索/随机/列表均不可见 draft）、anon 写与 RP
 或未确认时明确退出（exit 2），不做模拟验收。退出码：0 通过 / 1 验收失败 /
 2 守卫拒绝 / 3 清理失败。
 
-## 每日自动流水线（v0.3.x）
+## 每日自动流水线（v0.3 起；v0.4 增加量化门槛与判断账本）
 
 本地 claude CLI 生产当日原创内容 → 程序化硬校验 + 独立 CLI 审稿 → 原子认领 →
 时间门禁发布 → 公开 API 读回核验，一条命令完成：
@@ -177,14 +225,25 @@ npm run daily -- --status        # 查看该日期运行状态
 - **门禁语义**：09:00 前触发只生产不发布（exit 3，内容就绪为 prepared）；
   重跑在门禁后发布；错过 09:00 的迟到补发允许；同日已发布 → 幂等核验（不重复
   生产、不重写）；hash 不同 → 拒绝覆盖已发布内容（exit 4）
-- **校验拒绝不发布**：条数配比（10 短 + 1 脱口秀）、日期/ID 精确匹配、分类
-  白名单、原创来源、长度边界、外链/引用痕迹、近期 14 天与当批内部查重；独立
-  CLI 审稿（与生产无共享上下文）任一拒绝 → 最多一次修稿，仍失败 exit 2，失败
-  材料保存在 `data/daily-runs/<date>/rejected-*.json`
+- **配比（v0.5.0）**：每期 = 8 条采集改编（外部信源，经评审与本地化，标注
+  来源链接）+ 2 条原创短内容 + 1 段原创脱口秀；采集不足自动降级为原创补足
+  （原创底线 ≥1 条）；先用 `npm run collect` 充实物料池
+- **校验拒绝不发布**：总条数与配比、日期/ID 精确匹配、分类白名单、来源合同
+  （采集必须带有效原文链接、原创必须固定声明且无外链）、长度边界、
+  外链/引用痕迹、近期 14 天与当批内部查重；独立 CLI 审稿（与生产无共享上下文）
+  任一拒绝 → 最多一次修稿，仍失败 exit 2，失败材料保存在
+  `data/daily-runs/<date>/rejected-*.json`
+- **量化门槛双重约束（v0.4.0）**：审稿三档分数任一低于 `industry/selection.ts`
+  的下限即拒绝（即使审稿模型自判 pass，fail-closed）；每次审稿（通过/拒绝/调用
+  失败）作为一条判断事件追加进 `joke_analyses`（append-only、anon 不可读），
+  携带提示词版本与规则版本哈希，哪版规则审过哪期永远可追溯；门槛变更前用
+  `npm run selection-eval` 在标注样本上回放校准
 - **不信任模型自报**：发布以写库后从公开读取路径（数据层 + 网站
   `/api/v1/daily`）读回逐字段比对为准，hash（覆盖不可变日刊字段）与运行记录
   绑定；`--skip-http` 跳过网站核验时以 `published-unverified` 非零退出，不算
   完整成功
+- **历史内容不重判（v0.4.0）**：已发布期次的幂等核验只做形状校验 + hash 比对
+  + 读回比对，不按当前每日规则重校验——改配比/分类配置不会把历史期判为损坏
 - **并发互斥**：本机 SQLite 事务锁（进程崩溃自动释放）+ 云端按日期原子认领
 - **退出码**：0 成功（含幂等）/ 2 校验拒绝 / 3 门禁未到 / 4 其他错误
 

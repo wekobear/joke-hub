@@ -2,7 +2,9 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { buttonVariants, Card } from "@heroui/react";
 
-export const metadata = { title: "Skill 使用教程 · 每日笑话" };
+import { SITE } from "@joke-hub/industry/site";
+
+export const metadata = { title: `Skill 使用教程 · ${SITE.name}` };
 
 function RouteCard({
   id,

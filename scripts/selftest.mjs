@@ -1,7 +1,7 @@
 // store 层自测：npm run selftest（使用独立测试库，不碰 data/jokes.sqlite）
 import fs from "node:fs";
 import assert from "node:assert";
-import { openDb, importContent, getNotice, getJoke, randomShortJoke, queryJokes } from "../lib/store.mjs";
+import { openDb, importContent, getNotice, getJoke, randomShortJoke, queryJokes } from "@joke-hub/core/store";
 
 const TEST_DB = "data/selftest.sqlite";
 for (const f of [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`]) fs.rmSync(f, { force: true });

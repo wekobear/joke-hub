@@ -22,7 +22,7 @@ import crypto from "node:crypto";
 import {
   rest,
   getJoke, getIssue, queryJokes, getJokesByIds, getDailyRun,
-} from "../lib/supabase-store.mjs";
+} from "@joke-hub/core/supabase-store";
 
 const MARKER = "__jokehub_eq_regression__";
 const DATE_WINDOW_START = Date.UTC(2990, 0, 1);

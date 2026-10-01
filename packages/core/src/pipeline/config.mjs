@@ -3,33 +3,16 @@
 
 import crypto from "node:crypto";
 
-/** 上海时区默认发布门禁：内容日期当天 09:00（Asia/Shanghai）之后才允许发布。 */
-export const PUBLISH_NOT_BEFORE = "09:00";
-
-/** 每期固定结构：10 条短内容（含 ≥1 相声、≥1 讽刺对话、其余短笑话）+ 1 段脱口秀。 */
-export const DAILY_REQUIREMENT = {
-  shortCount: 10,
-  talkCount: 1,
-  minCrosstalk: 1, // 相声
-  minSatire: 1, // 讽刺对话
-  minShortJokes: 6, // 短笑话下限（与上限合计恰好 10 短）
-};
-
-/** 生成源固定声明：模型不得自造来源，校验器按此硬校验。 */
-export const DAILY_SOURCE = { label: "每日自动创作 · AI 原创生成", url: null, kind: "original" };
-
-/** 分类白名单：prompt 限定从中选择，校验器硬校验（超出即拒绝）。 */
-export const DAILY_CATEGORIES = [
-  "生活", "职场", "程序员", "养宠", "家庭", "校园",
-  "健康", "运动", "旅行", "美食", "购物", "社交",
-  "钓鱼", "社会", "科技", "情感",
-];
-
-/** 近期查重回看窗口（含当天之前的 N 天库内内容）。 */
-export const DUPE_LOOKBACK_DAYS = 14;
-
-/** 与历史条目正文字符 bigram 相似度阈值，达到即判重复。 */
-export const DUPE_SIMILARITY_THRESHOLD = 0.55;
+// 行业相关常量（门禁时间、配比、来源声明、分类白名单、查重参数）的唯一
+// 出处是 @joke-hub/industry；这里仅为既有调用点保持兼容 re-export。
+// 改定位改 industry/，不改这里。
+export {
+  PUBLISH_NOT_BEFORE, DAILY_REQUIREMENT, DAILY_SOURCE, DAILY_CATEGORIES, LIMITS,
+} from "@joke-hub/industry/taxonomy";
+import { SELECTION } from "@joke-hub/industry/selection";
+export { SELECTION };
+export const DUPE_LOOKBACK_DAYS = SELECTION.dupeLookbackDays;
+export const DUPE_SIMILARITY_THRESHOLD = SELECTION.dupeSimilarityThreshold;
 
 /** 每日运行记录目录（data/ 已在 .gitignore，不会进入开源仓库）。 */
 export function dailyRunsDir() {

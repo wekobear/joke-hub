@@ -2,8 +2,9 @@
 // Node type stripping) and Next (lib/db.ts). Keep this file free of runtime
 // deps and non-erasable TS syntax (no enums/namespaces) so node can run it.
 
-export const FORMATS = ["短笑话", "相声", "讽刺对话", "脱口秀"] as const;
-export const SOURCE_KINDS = ["original", "adapted", "example"] as const;
+// 格式与来源类别的唯一出处是行业配置包（industry/taxonomy.ts）。
+export { FORMATS, SOURCE_KINDS } from "@joke-hub/industry/taxonomy";
+import { FORMATS, SOURCE_KINDS } from "@joke-hub/industry/taxonomy";
 
 export type JokeFormat = (typeof FORMATS)[number];
 export type SourceKind = (typeof SOURCE_KINDS)[number];

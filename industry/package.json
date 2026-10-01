@@ -1,0 +1,14 @@
+{
+  "name": "@joke-hub/industry",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "笑话网站的定位配置包：站名文案、分类词表、入选门槛、功能开关、提示词。改定位只改这个包，不改代码。",
+  "exports": {
+    "./site": "./site.ts",
+    "./taxonomy": "./taxonomy.ts",
+    "./selection": "./selection.ts",
+    "./features": "./features.ts",
+    "./package.json": "./package.json"
+  }
+}

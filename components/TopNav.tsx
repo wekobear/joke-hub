@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
+import { SITE } from "@joke-hub/industry/site";
 
 export default function TopNav() {
   const pathname = usePathname();
@@ -35,12 +36,12 @@ export default function TopNav() {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/brand/logo.png"
-            alt="每日笑话 logo"
+            alt={`${SITE.name} logo`}
             width={36}
             height={36}
             className="size-9 rounded-xl object-cover"
           />
-          每日笑话
+          {SITE.name}
         </Link>
         <nav
           aria-label="主导航"

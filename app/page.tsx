@@ -1,26 +1,12 @@
 import Link from "next/link";
 import { getJokesByIds, getLatestIssueWithJokes, listIssues, getNotice } from "@/lib/db";
 import { todayInShanghai } from "@/lib/datetime";
+import { SITE, pickTagline } from "@joke-hub/industry/site";
 import { buttonVariants } from "@heroui/react";
 import JokeGrid from "@/components/JokeGrid";
 import Bloub from "@/components/Bloub";
 
 export const dynamic = "force-dynamic";
-
-// 每日一句：按日期轮换；服务端定值，避免水合闪烁
-const TAGLINES = [
-  "阅读本页可能引起嘴角上扬、同事侧目等副作用。",
-  "笑话均经人工质检，笑点过低者请酌情阅读。",
-  "据不完全统计，读完的人 87% 会心一笑，13% 会心一酸。",
-  "今日份快乐已备好，请按顺序笑，谢谢配合。",
-  "blob 已替你试笑过一遍，安全。",
-];
-
-function pickTagline(date: string) {
-  let sum = 0;
-  for (const ch of date) sum += ch.charCodeAt(0);
-  return TAGLINES[sum % TAGLINES.length];
-}
 
 export default async function DailyPage({
   searchParams,
@@ -37,9 +23,10 @@ export default async function DailyPage({
     ? (issues.find((i) => i.date === date) ?? null)
     : latest;
   const jokes = issue ? await getJokesByIds(issue.jokeIds) : [];
-  // 短区：所有非脱口秀内容（短笑话/相声/讽刺对话）；长区：仅脱口秀
-  const shorts = jokes.filter((j) => j.format !== "脱口秀").slice(0, 10);
-  const longs = jokes.filter((j) => j.format === "脱口秀").slice(0, 1);
+  // 短区：所有非脱口秀内容（短笑话/相声/讽刺对话）；长区：全部脱口秀。
+  // 按期次实际内容渲染，不做条数硬截取——配比由 industry/taxonomy 的校验器把关。
+  const shorts = jokes.filter((j) => j.format !== "脱口秀");
+  const longs = jokes.filter((j) => j.format === "脱口秀");
   const notice = await getNotice();
 
   return (
@@ -73,8 +60,8 @@ export default async function DailyPage({
               </h1>
               <p className="mt-1.5 text-sm text-muted">
                 {issue.date}
-                {issue.date === today ? " · 今日一期" : " · 往期"} · 短笑话{" "}
-                {shorts.length} 则{longs.length ? " · 长篇 1 则" : " · 本期无长篇"}
+                {issue.date === today ? " · 今日一期" : " · 往期"} · 短内容{" "}
+                {shorts.length} 则{longs.length ? ` · 长篇 ${longs.length} 则` : " · 本期无长篇"}
               </p>
               <p className="mt-2 text-sm text-muted/90">{pickTagline(issue.date)}</p>
             </div>

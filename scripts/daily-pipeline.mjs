@@ -17,9 +17,9 @@
 // 退出码：0 成功（含幂等复用/prepared）；2 校验拒绝；3 门禁未到；4 其他错误。
 import fs from "node:fs";
 import path from "node:path";
-import { runPipeline, EXIT } from "../lib/daily/pipeline.mjs";
-import { shanghaiNow } from "../lib/daily/config.mjs";
-import { loadLatestRun } from "../lib/daily/runs.mjs";
+import { runPipeline, EXIT } from "@joke-hub/core/pipeline";
+import { shanghaiNow } from "@joke-hub/core/pipeline";
+import { loadLatestRun } from "@joke-hub/core/pipeline";
 
 const args = process.argv.slice(2);
 
@@ -50,7 +50,7 @@ const date = dateArg ?? shanghaiNow().date;
 
 // 日期先于任何文件访问验证（date 会拼进运行目录路径）
 try {
-  (await import("../lib/daily/validate.mjs")).assertTargetDate(date);
+  (await import("@joke-hub/core/pipeline")).assertTargetDate(date);
 } catch (e) {
   console.error(`FAIL ${e.message}`);
   process.exit(4);
@@ -61,7 +61,7 @@ if (wantStatus) {
   const latest = loadLatestRun(date);
   let backendInfo = "";
   try {
-    const { supabaseReadConfig } = await import("../lib/supabase-store.mjs");
+    const { supabaseReadConfig } = await import("@joke-hub/core/supabase-store");
     backendInfo = supabaseReadConfig() ? "supabase" : "sqlite";
   } catch (e) {
     backendInfo = `配置错误：${e.message}`;

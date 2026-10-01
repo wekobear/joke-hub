@@ -17,10 +17,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { validateDailyPackage } from "./validate.mjs";
 import {
   PUBLISH_NOT_BEFORE, DUPE_LOOKBACK_DAYS, dailyRunsDir,
-  checkPublishGate, shanghaiNow, contentHashStable, pipelineLogFile,
+  checkPublishGate, shanghaiNow, contentHashStable, pipelineLogFile, SELECTION,
+  DAILY_REQUIREMENT, DAILY_SOURCE, normalizeText, bigramSimilarity,
 } from "./config.mjs";
 import {
   RunRecord, newRunId, acquireLock, releaseLock,
@@ -31,7 +33,11 @@ function lockDbPathSafe() {
   return path.join(dailyRunsDir(), ".pipeline-lock.sqlite");
 }
 import { runClaudeText, extractJson } from "./claude-cli.mjs";
-import { buildProducePrompt, buildRevisePrompt, buildReviewPrompt } from "./prompts.mjs";
+import {
+  buildProducePrompt, buildRevisePrompt, buildReviewPrompt, buildAdaptPrompt,
+  promptVersion, policyVersion,
+} from "./prompts.mjs";
+import { loadSources } from "../sources/collect.mjs";
 
 export const EXIT = { OK: 0, REJECTED: 2, GATE_WAITING: 3, ERROR: 4 };
 
@@ -63,24 +69,84 @@ export function parseReviewVerdict(verdict) {
   return { pass, reasons: pass ? [] : reasonList, scores };
 }
 
+// ---------- 量化入选门槛（industry/selection.ts 是唯一出处） ----------
+
+/**
+ * 门槛复核：三档分数任一低于 SELECTION.minScores 即 false；无分数（error）为 null。
+ * 与审稿模型自判 pass 双重约束（fail-closed）：模型全 0 分也可能自判 pass。
+ */
+export function thresholdVerdict(scores) {
+  if (!scores || typeof scores !== "object") return null;
+  const min = SELECTION.minScores;
+  return Object.keys(min).every((k) => typeof scores[k] === "number" && scores[k] >= min[k]);
+}
+
+/**
+ * 就地施加门槛：pass=true 但分数低于门槛 → 转拒绝（理由写明具体差值）。
+ * 返回门槛判定（供判断事件记录 thresholdVerdict）。
+ */
+export function applySelectionThreshold(v) {
+  const tv = thresholdVerdict(v.scores);
+  if (tv === false && v.pass === true) {
+    const min = SELECTION.minScores;
+    const why = Object.keys(min)
+      .filter((k) => v.scores[k] < min[k])
+      .map((k) => `${k} ${v.scores[k]}<${min[k]}`)
+      .join("、");
+    v.pass = false;
+    v.reasons = [`审稿分数低于入选门槛（${why}）`];
+  }
+  return tv;
+}
+
+/** 构造一条判断事件（字段与 joke_analyses 一一对应）。 */
+function buildAnalysisEvent({ date, runId, stage, attempt, verdict: v, thresholdOk, contentHash, policyVer }) {
+  const hasScores = v.scores && typeof v.scores === "object";
+  return {
+    eventId: crypto.randomUUID(),
+    runDate: date,
+    runId,
+    stage,
+    attempt: attempt ?? 1,
+    outcome: hasScores ? (v.pass ? "pass" : "reject") : "error",
+    verdict: hasScores ? Boolean(v.pass) : null,
+    scores: v.scores ?? null,
+    reasons: v.reasons ?? [],
+    thresholdVerdict: thresholdOk ?? null,
+    contentHash: contentHash ?? null,
+    promptVersion: promptVersion("review"),
+    policyVersion: policyVer,
+    model: v.meta?.model ?? null,
+    durationMs: v.meta?.durationMs ?? null,
+    usage: v.meta?.usage ?? null,
+    rawOutput: v.rawOutput ?? null,
+  };
+}
+
 // ---------- 依赖：真实实现（本地 claude CLI） ----------
 
-async function realProduce({ date, recentTitles, reasons, previousJson }) {
+async function realProduce({ date, originalShortCount, collectedCount, recentTitles, reasons, previousJson }) {
   const prompt = reasons
-    ? buildRevisePrompt({ date, previousJson: previousJson ?? "", reasons })
-    : buildProducePrompt({ date, recentTitles });
-  const text = await runClaudeText(prompt, { timeoutMs: 900_000, label: "produce" });
+    ? buildRevisePrompt({ date, originalShortCount, collectedCount, recentTitles, previousJson: previousJson ?? "", reasons })
+    : buildProducePrompt({ date, originalShortCount, collectedCount, recentTitles });
+  const { text } = await runClaudeText(prompt, { timeoutMs: 900_000, label: "produce" });
   return extractJson(text, { label: "produce" });
 }
 
 async function realReview({ date, content, recentTitles }) {
   try {
+    // 用包内实际配比渲染（采集不足降级时与目标配比不同）
+    const shorts = content.jokes.filter((j) => j.format !== "脱口秀");
+    const adapted = shorts.filter((j) => j.source?.kind === "adapted").length;
     const prompt = buildReviewPrompt({
       date, packageJson: JSON.stringify(content, null, 2), recentTitles,
+      collectedShortCount: adapted, originalShortCount: shorts.length - adapted,
     });
-    const text = await runClaudeText(prompt, { timeoutMs: 600_000, label: "review" });
+    const { text, meta } = await runClaudeText(prompt, { timeoutMs: 600_000, label: "review" });
     const verdict = extractJson(text, { label: "review" });
     const parsed = parseReviewVerdict(verdict);
+    parsed.meta = meta;
+    parsed.rawOutput = verdict; // 原始输出留档（判断事件 raw_output）
     // 每条内容都已审：reviewedIds 必须覆盖包内全部 id
     const ids = new Set(content.jokes.map((j) => j.id));
     const reviewed = Array.isArray(verdict.reviewedIds) ? new Set(verdict.reviewedIds.map(String)) : null;
@@ -110,15 +176,21 @@ function createProgress(date) {
 }
 
 // ---------- 读取后端统一抽象（SQLite / Supabase 同接口） ----------
+// 读取实现与网站共用 publication 读取层（同一份代码，"发布以公开读取路径读回
+// 比对为准"由此字面成立）；认领/发布是流水线专用的写路径，不进 publication。
 
 async function openBackend() {
   const { supabaseReadConfig } = await import("../supabase-store.mjs");
+  const { publicationReader } = await import("../publication.mjs");
   const cfg = supabaseReadConfig(); // null = 本地 SQLite 模式；配置不完整会抛错
   if (!cfg) {
     const { openDb, defaultDbPath } = await import("../store.mjs");
+    const db = openDb(defaultDbPath(), null); // 不做种子导入：内容只由流水线/显式导入写入
+    const reader = publicationReader({ getDb: () => db });
     return {
       kind: "sqlite",
-      db: openDb(defaultDbPath(), null), // 不做种子导入：内容只由流水线/显式导入写入
+      db,
+      reader,
       async recentForDupe(date) {
         const { recentJokesForDupe } = await import("../store.mjs");
         return recentJokesForDupe(this.db, date, DUPE_LOOKBACK_DAYS);
@@ -135,16 +207,48 @@ async function openBackend() {
         const { dailyPublish } = await import("../store.mjs");
         return dailyPublish(this.db, date, hash, content);
       },
+      async saveAnalysis(rec) {
+        const { saveAnalysis } = await import("../store.mjs");
+        return saveAnalysis(this.db, rec);
+      },
+      async insertMaterials(rows) {
+        const { insertMaterials } = await import("../store.mjs");
+        return insertMaterials(this.db, rows);
+      },
+      async listPendingJudgement(limit) {
+        const { listPendingJudgement } = await import("../store.mjs");
+        return listPendingJudgement(this.db, limit);
+      },
+      async applyJudgements(results, minScores) {
+        const { applyJudgements } = await import("../store.mjs");
+        return applyJudgements(this.db, results, minScores);
+      },
+      async listEligibleMaterials(minScores) {
+        const { listEligibleMaterials } = await import("../store.mjs");
+        return listEligibleMaterials(this.db, minScores);
+      },
+      async markMaterialsSelected(ids, issueDate) {
+        const { markMaterialsSelected } = await import("../store.mjs");
+        return markMaterialsSelected(this.db, ids, issueDate);
+      },
+      async releaseMaterialsSelection(ids, issueDate) {
+        const { releaseMaterialsSelection } = await import("../store.mjs");
+        return releaseMaterialsSelection(this.db, ids, issueDate);
+      },
+      async materialsStats() {
+        const { materialsStats } = await import("../store.mjs");
+        return materialsStats(this.db);
+      },
       async readIssue(date) {
-        const { getIssue, getJokesByIds } = await import("../store.mjs");
-        const issue = getIssue(this.db, date);
-        return issue ? { issue, items: getJokesByIds(this.db, issue.jokeIds) } : null;
+        return this.reader.getIssueWithItems(date);
       },
     };
   }
   const sb = await import("../supabase-store.mjs");
+  const reader = publicationReader({ getDb: () => null });
   return {
     kind: "supabase",
+    reader,
     async recentForDupe(date) {
       return sb.recentJokesForDupe(date, DUPE_LOOKBACK_DAYS);
     },
@@ -157,10 +261,34 @@ async function openBackend() {
     async publish(date, hash, content) {
       return sb.dailyPublish(content, date, hash);
     },
+    async saveAnalysis(rec) {
+      return sb.saveAnalysis(rec);
+    },
+    async insertMaterials(rows) {
+      return sb.insertMaterials(rows);
+    },
+    async listPendingJudgement(limit) {
+      return sb.listPendingJudgement(limit);
+    },
+    async applyJudgements(results, minScores) {
+      return sb.applyJudgements(results, minScores);
+    },
+    async listEligibleMaterials(minScores) {
+      return sb.listEligibleMaterials(minScores);
+    },
+    async markMaterialsSelected(ids, issueDate) {
+      return sb.markMaterialsSelected(ids, issueDate);
+    },
+    async releaseMaterialsSelection(ids, issueDate) {
+      return sb.releaseMaterialsSelection(ids, issueDate);
+    },
+    async materialsStats() {
+      // 云端没有专用统计函数：用可入选数量近似（CLI 展示用）
+      const eligible = await sb.listEligibleMaterials(SELECTION.collected.minScores);
+      return { eligible: eligible.length };
+    },
     async readIssue(date) {
-      const issue = await sb.getIssue(date);
-      if (!issue) return null;
-      return { issue, items: await sb.getJokesByIds(issue.jokeIds) };
+      return this.reader.getIssueWithItems(date);
     },
   };
 }
@@ -195,6 +323,124 @@ export function comparePackage(content, { issue, items }) {
     diffs.push("期次条目顺序不一致");
   }
   return diffs;
+}
+
+// ---------- 采集物料选取与本地化改编（v0.5.0） ----------
+
+/**
+ * 从物料池选取本期采集改编条目：分数达标（industry/selection.collected）+
+ * 与近 14 天已发布内容、已选中的采集条目做词面查重；数量不足时返回实际条数
+ * （ shortfall 由原创补足，配比降级会体现在运行记录里）。
+ * 在达标池中取前 need*2 条随机打散后挑选，避免每天总是同一批最高分。
+ */
+export async function selectCollectedMaterials(backend, date, need = DAILY_REQUIREMENT.collectedShortCount, excludeIds = []) {
+  const excluded = new Set(excludeIds);
+  const eligible = (await backend.listEligibleMaterials(SELECTION.collected.minScores))
+    .filter((m) => !excluded.has(m.id));
+  const sourceNames = new Map(loadSources().map((src) => [src.id, src.name]));
+  const withNames = eligible.map((m) => ({ ...m, sourceName: sourceNames.get(m.sourceId) ?? m.sourceId }));
+
+  const recent = await backend.recentForDupe(date);
+  const recentBodies = recent.map((j) => normalizeText(j.body));
+
+  // 随机化窗口：分数前 need*2 名内打散
+  const pool = withNames.slice(0, Math.max(need * 2, need + 4));
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+
+  const picked = [];
+  const pickedBodies = [];
+  const isDup = (nb, list) =>
+    list.some((b) => b === nb || (nb.length >= 20 && bigramSimilarity(nb, b) >= SELECTION.dupeSimilarityThreshold));
+  for (const m of pool) {
+    if (picked.length >= need) break;
+    const nb = normalizeText(m.body);
+    if (isDup(nb, recentBodies) || isDup(nb, pickedBodies)) continue;
+    picked.push(m);
+    pickedBodies.push(nb);
+  }
+  return picked;
+}
+
+/** 改编输出的严格解析：数组逐条对应候选（i 完整覆盖）、title/category 合法。 */
+export function parseAdaptOutput(raw, candidates) {
+  if (!Array.isArray(raw)) throw new Error("adapt 输出不是数组");
+  const byI = new Map(raw.map((r) => [Number(r?.i), r]));
+  return candidates.map((_, i) => {
+    const r = byI.get(i);
+    if (!r || typeof r !== "object") throw new Error(`adapt 输出缺少候选 #${i}`);
+    if (typeof r.title !== "string" || r.title.trim().length < 2) throw new Error(`adapt #${i} title 非法`);
+    if (typeof r.body !== "string" || !r.body.trim()) throw new Error(`adapt #${i} body 非法`);
+    if (typeof r.category !== "string" || !r.category.trim()) throw new Error(`adapt #${i} 缺少 category`);
+    return { title: r.title.trim(), body: r.body.trim(), category: r.category.trim() };
+  });
+}
+
+/** 采集候选的真实改编实现（本地 claude CLI，与生产/审稿相互独立）。 */
+async function realAdapt({ date, candidates }) {
+  const prompt = buildAdaptPrompt({ date, candidates });
+  const { text } = await runClaudeText(prompt, { timeoutMs: 600_000, label: "adapt-collected" });
+  return parseAdaptOutput(extractJson(text, { label: "adapt-collected" }), candidates);
+}
+
+/**
+ * 组装每日内容包：采集改编条目占 s01..sNN，原创短内容紧随其后，脱口秀压轴。
+ * 采集条目 source 标注来源与原文链接（kind=adapted）；原创用固定声明。
+ */
+export function buildDailyPackage({ date, selected, adapted, produced }) {
+  const c = date.replaceAll("-", "");
+  const jokes = [];
+  selected.forEach((m, k) => {
+    jokes.push({
+      id: `daily-${c}-s${String(k + 1).padStart(2, "0")}`,
+      title: adapted[k].title,
+      body: adapted[k].body,
+      category: adapted[k].category,
+      format: "短笑话",
+      date,
+      featured: true,
+      source: {
+        label: `${m.sourceName} · 采集改编`,
+        url: m.url ?? null,
+        kind: "adapted",
+      },
+    });
+  });
+  produced.originalShorts.forEach((j, k) => {
+    jokes.push({
+      id: `daily-${c}-s${String(selected.length + k + 1).padStart(2, "0")}`,
+      title: j.title,
+      body: j.body,
+      category: j.category,
+      format: j.format ?? "短笑话",
+      date,
+      featured: true,
+      source: { ...DAILY_SOURCE },
+    });
+  });
+  jokes.push({
+    id: `daily-${c}-talk`,
+    title: produced.talk.title,
+    body: produced.talk.body,
+    category: produced.talk.category,
+    format: "脱口秀",
+    date,
+    featured: true,
+    source: { ...DAILY_SOURCE },
+  });
+  return {
+    schemaVersion: 1,
+    notice: `每日自动创作 · ${date} 期`,
+    issues: [{
+      date,
+      title: produced.issueTitle,
+      description: produced.issueDescription,
+      jokeIds: jokes.map((j) => j.id),
+    }],
+    jokes,
+  };
 }
 
 // ---------- 主流程 ----------
@@ -233,6 +479,11 @@ export async function runPipeline(options = {}, deps = {}) {
 
   const progress = deps.progress ?? createProgress(date);
   const run = new RunRecord(date, newRunId());
+  const polVer = policyVersion();
+  run.patch({
+    policyVersion: polVer,
+    promptVersions: { produce: promptVersion("produce"), review: promptVersion("review") },
+  });
   const finish = (status, exitCode) => {
     run.finish(status);
     return { exitCode, status, summary: run.data };
@@ -273,6 +524,23 @@ export async function runPipeline(options = {}, deps = {}) {
     }
     run.patch({ backend: backend.kind });
     progress(`数据后端：${backend.kind}`);
+    // 读回核验统一入口：默认读真实后端；deps.readIssue 供自测注入篡改结果
+    const readIssue = deps.readIssue ?? ((d) => backend.readIssue(d));
+
+    // 判断事件记录（评审 #2/#5）：每次审稿结束独立追加，pass/reject/error 全记；
+    // run 模式落库失败 → 本轮不进入发布；prepare 模式只进本地 run 记录（by design）
+    const recordAnalysis = async (event) => {
+      if (mode === "prepare") {
+        run.patch({ analyses: [...(run.data.analyses ?? []), event] });
+        return null;
+      }
+      try {
+        await backend.saveAnalysis(event);
+        return null;
+      } catch (e) {
+        return `判断事件落库失败，按合同本轮不进入发布：${e.message}`;
+      }
+    };
 
     const nowSh = shanghaiNow();
 
@@ -296,7 +564,7 @@ export async function runPipeline(options = {}, deps = {}) {
       // 已发布：进入幂等路径（绝不重新生产、绝不重写）
       progress(`已发布记录存在（hash=${cloudRun.contentHash.slice(0, 12)}…），走幂等核验`);
       return await idempotentVerifyPath(backend, date, cloudRun, run, finish, {
-        siteUrl, skipHttp, progress,
+        siteUrl, skipHttp, progress, readIssue,
       });
     }
 
@@ -315,6 +583,9 @@ export async function runPipeline(options = {}, deps = {}) {
     let revision = 0;
     let lastErrors = [];
     let lastRaw = null;
+    // v0.5.1（评审 #2/#6）：物料占用随成品持久化；修稿轮排除上轮物料重新选取
+    let reusedMaterialIds = [];
+    let excludedMaterialIds = [];
 
     if (reusedPackage) {
       // 复用：hash 重算 + 程序化校验重跑（绝不信任包内保存的 hash/pass）
@@ -333,24 +604,77 @@ export async function runPipeline(options = {}, deps = {}) {
       });
       if (recheck.ok) {
         content = reusedPackage.content;
+        reusedMaterialIds = Array.isArray(reusedPackage.meta?.materialIds) ? reusedPackage.meta.materialIds : [];
         progress(`复用本地成品并重校验通过（hash=${hash.slice(0, 12)}…），发布前将重新独立审稿`);
       } else {
         progress(`复用成品复检未通过（${recheck.errors.length} 项），转重新生产`);
       }
     }
 
+    // v0.5：采集部分（选取 + 本地化改编）只准备一次；改编失败是硬失败（不是修稿能修的）
+    let prepared = null;
+    const ensureCollected = async () => {
+      if (prepared) return null;
+      let selected;
+      try {
+        selected = deps.selectCollected
+          ? await deps.selectCollected({ date, need: DAILY_REQUIREMENT.collectedShortCount, excludeIds: excludedMaterialIds })
+          : await selectCollectedMaterials(backend, date, DAILY_REQUIREMENT.collectedShortCount, excludedMaterialIds);
+      } catch (e) {
+        run.fail(`采集物料选取失败：${e.message}`);
+        progress(`FAIL 采集物料选取失败：${e.message}`);
+        return finish("failed", EXIT.ERROR);
+      }
+      const shortfall = DAILY_REQUIREMENT.collectedShortCount - selected.length;
+      run.stage("collect-select", "ok", {
+        selected: selected.length,
+        shortfall,
+        ids: selected.map((m) => m.id),
+      });
+      progress(`采集物料选取 ${selected.length}/${DAILY_REQUIREMENT.collectedShortCount}${shortfall > 0 ? `（缺 ${shortfall} 条，用原创补足）` : ""}`);
+      let adapted = [];
+      if (selected.length) {
+        try {
+          adapted = await (deps.adapt ?? realAdapt)({ date, candidates: selected });
+        } catch (e) {
+          run.stage("adapt", "failed", {}, e.message);
+          run.fail(`采集内容本地化改编失败：${e.message}`);
+          progress(`FAIL 采集改编失败：${e.message}`);
+          return finish("failed", EXIT.ERROR);
+        }
+        run.stage("adapt", "ok", { count: adapted.length });
+      }
+      prepared = { selected, adapted };
+      return null;
+    };
+
     while (!content) {
-      // 生产（真实 claude CLI 或注入实现）
-      let raw;
+      const prepErr = await ensureCollected();
+      if (prepErr) return prepErr;
+      const collectedCount = prepared.selected.length;
+      const originalShortCount = DAILY_REQUIREMENT.originalShortCount
+        + (DAILY_REQUIREMENT.collectedShortCount - collectedCount);
+
+      // 生产原创部分（真实 claude CLI 或注入实现）
+      let produced;
       try {
         const recent = await backend.recentForDupe(date);
         const recentTitles = [...new Set(recent.map((j) => j.title))];
-        raw = await produce({
+        produced = await produce({
           date,
+          originalShortCount,
+          collectedCount,
           recentTitles,
           reasons: revision === 0 ? null : lastErrors,
           previousJson: lastRaw ? JSON.stringify(lastRaw, null, 2) : null,
         });
+        // 生产输出形状快速校验（形状不对视作当次生产失败，消耗修稿机会）
+        if (!produced || typeof produced !== "object"
+          || !Array.isArray(produced.originalShorts) || produced.originalShorts.length !== originalShortCount
+          || !produced.talk || typeof produced.talk !== "object"
+          || typeof produced.issueTitle !== "string" || typeof produced.issueDescription !== "string") {
+          throw new Error(`生产输出形状不符（originalShorts 应为 ${originalShortCount} 条）`);
+        }
       } catch (e) {
         run.stage("produce", "failed", { attempt: revision + 1 }, e.message);
         // CLI 级失败也允许消耗一次修稿机会（如输出 JSON 损坏）
@@ -358,6 +682,7 @@ export async function runPipeline(options = {}, deps = {}) {
           revision++;
           lastErrors = [e.message];
           lastRaw = null;
+          if (prepared) { excludedMaterialIds.push(...prepared.selected.map((m) => m.id)); prepared = null; }
           progress(`生产调用失败，进行第 ${revision}/${maxRevisions} 次修稿：${e.message}`);
           continue;
         }
@@ -366,8 +691,12 @@ export async function runPipeline(options = {}, deps = {}) {
         saveRejectedPackage(date, run.data.runId, { error: e.message }, [e.message]);
         return finish("rejected", EXIT.REJECTED);
       }
+      // 组装完整内容包：采集改编（s01..sNN）+ 原创（紧随其后）+ 脱口秀（压轴）
+      const raw = buildDailyPackage({
+        date, selected: prepared.selected, adapted: prepared.adapted, produced,
+      });
       lastRaw = raw;
-      run.stage("produce", "ok", { attempt: revision + 1 });
+      run.stage("produce", "ok", { attempt: revision + 1, originalShortCount, collectedCount });
 
       // 程序化硬校验（与生产相互独立）
       let verdict;
@@ -387,6 +716,7 @@ export async function runPipeline(options = {}, deps = {}) {
       if (!verdict.ok) {
         if (needRevision()) {
           revision++;
+          if (prepared) { excludedMaterialIds.push(...prepared.selected.map((m) => m.id)); prepared = null; }
           progress(`程序化校验拒绝（${verdict.errors.length} 项），进行第 ${revision}/${maxRevisions} 次修稿`);
           continue;
         }
@@ -399,18 +729,31 @@ export async function runPipeline(options = {}, deps = {}) {
         return finish("rejected", EXIT.REJECTED);
       }
 
-      // 独立 CLI 审稿（与生产无共享上下文的第二次调用）
+      // 独立 CLI 审稿（与生产无共享上下文的第二次调用）→ 量化门槛复核 → 判断事件落库
       const recent = await backend.recentForDupe(date);
       const recentTitles = [...new Set(recent.map((j) => j.title))];
       const reviewVerdict = await review({ date, content: verdict.content, recentTitles });
+      const candidateHash = contentHashStable(verdict.content);
+      const thresholdOk = applySelectionThreshold(reviewVerdict);
+      const analysisErr = await recordAnalysis(buildAnalysisEvent({
+        date, runId: run.data.runId, stage: "review", attempt: revision + 1,
+        verdict: reviewVerdict, thresholdOk, contentHash: candidateHash, policyVer: polVer,
+      }));
+      if (analysisErr) {
+        run.fail(analysisErr);
+        progress(`FAIL ${analysisErr}`);
+        return finish("failed", EXIT.ERROR);
+      }
       run.stage("review", reviewVerdict.pass ? "ok" : "failed", {
         attempt: revision + 1,
         scores: reviewVerdict.scores,
+        thresholdVerdict: thresholdOk,
         reasons: reviewVerdict.pass ? null : reviewVerdict.reasons,
       });
       if (!reviewVerdict.pass) {
         if (needRevision()) {
           revision++;
+          if (prepared) { excludedMaterialIds.push(...prepared.selected.map((m) => m.id)); prepared = null; }
           lastErrors = reviewVerdict.reasons;
           progress(`独立审稿拒绝，进行第 ${revision}/${maxRevisions} 次修稿：${reviewVerdict.reasons.join("；")}`);
           continue;
@@ -424,9 +767,10 @@ export async function runPipeline(options = {}, deps = {}) {
       }
 
       content = verdict.content;
-      hash = contentHashStable(content);
+      hash = candidateHash;
       const pkgPath = saveValidatedPackage(date, content, hash, {
         revision, reviewed: true, backend: backend.kind,
+        materialIds: prepared.selected.map((m) => m.id),
       });
       run.patch({ contentHash: hash, packagePath: pkgPath });
       progress(`生产+校验+独立审稿通过（第 ${revision + 1} 次生产），hash=${hash.slice(0, 12)}…`);
@@ -438,11 +782,30 @@ export async function runPipeline(options = {}, deps = {}) {
       return finish("prepared", EXIT.OK);
     }
 
+    // 5z. 物料占用（评审 #2/#4）：新建与复用路径统一执行；事务型，冲突即整批失败
+    const occupyIds = prepared ? prepared.selected.map((m) => m.id) : reusedMaterialIds;
+    if (occupyIds.length) {
+      try {
+        await backend.markMaterialsSelected(occupyIds, date);
+      } catch (e) {
+        run.fail(`物料占用失败：${e.message}`);
+        progress(`FAIL 物料占用失败：${e.message}`);
+        return finish("failed", EXIT.ERROR);
+      }
+      run.stage("materials-mark", "ok", { count: occupyIds.length, via: prepared ? "fresh" : "reused" });
+    }
+
     // 6. 原子认领（并发/覆盖保护；生产互斥由本地锁承担，这里协调发布权）
     let claimVerdict;
     try {
       claimVerdict = await backend.claim(date, hash);
     } catch (e) {
+      // 认领失败（该日期已发布不同内容等）：释放本次占用，物料回到候选池
+      try {
+        await backend.releaseMaterialsSelection(occupyIds, date);
+      } catch (relErr) {
+        progress(`WARN 占用释放失败（需人工核对物料归属）：${relErr.message}`);
+      }
       run.fail(`认领失败（可能该日期已发布不同内容）：${e.message}`);
       progress(`FAIL 认领失败：${e.message}`);
       return finish("failed", EXIT.ERROR);
@@ -452,7 +815,7 @@ export async function runPipeline(options = {}, deps = {}) {
       progress("认领结果 already_published：该日期已发布同 hash 内容，进入幂等核验");
       const cloudRun2 = await backend.getRun(date);
       return await idempotentVerifyPath(backend, date, cloudRun2, run, finish, {
-        siteUrl, skipHttp, progress, expectHash: hash,
+        siteUrl, skipHttp, progress, expectHash: hash, readIssue,
       });
     }
 
@@ -462,9 +825,20 @@ export async function runPipeline(options = {}, deps = {}) {
       const recent = await backend.recentForDupe(date);
       const recentTitles = [...new Set(recent.map((j) => j.title))];
       const reviewVerdict = await review({ date, content, recentTitles });
+      const thresholdOk = applySelectionThreshold(reviewVerdict);
+      const analysisErr = await recordAnalysis(buildAnalysisEvent({
+        date, runId: run.data.runId, stage: "review-rebind", attempt: 1,
+        verdict: reviewVerdict, thresholdOk, contentHash: hash, policyVer: polVer,
+      }));
+      if (analysisErr) {
+        run.fail(analysisErr);
+        progress(`FAIL ${analysisErr}`);
+        return finish("failed", EXIT.ERROR);
+      }
       run.stage("review-rebind", reviewVerdict.pass ? "ok" : "failed", {
         hash,
         scores: reviewVerdict.scores,
+        thresholdVerdict: thresholdOk,
         reasons: reviewVerdict.pass ? null : reviewVerdict.reasons,
       });
       if (!reviewVerdict.pass) {
@@ -498,14 +872,14 @@ export async function runPipeline(options = {}, deps = {}) {
 
     // 9. 核验：从公开读取路径读回比对（不是模型自报）
     return await verifyAndFinish(backend, date, content, run, finish, {
-      siteUrl, skipHttp, progress,
+      siteUrl, skipHttp, progress, readIssue,
     });
   }
 }
 
 /** 幂等路径：已发布内容只读回核对，绝不重写。 */
 async function idempotentVerifyPath(backend, date, cloudRun, run, finish, opts) {
-  const stored = await backend.readIssue(date);
+  const stored = await opts.readIssue(date);
   if (!stored) {
     run.fail("运行记录为已发布，但读取期次为空：数据不一致");
     opts.progress(`FAIL ${date} 标记已发布但读不到期次`);
@@ -527,6 +901,10 @@ async function idempotentVerifyPath(backend, date, cloudRun, run, finish, opts) 
   if (content) {
     diffs = comparePackage(content, stored);
   } else {
+    // 历史核验（评审 #6）：从库内重建的已发布内容只做 schema 形状校验，
+    // 随后走 hash 重算比对与公开读回比对；不按当前每日规则重校验——
+    // 配置（配比/分类/长度）变更不能把完好的历史内容判为损坏。
+    // 当前规则的完整校验只用于新内容准入（生产循环里）。
     content = {
       schemaVersion: 1,
       notice: "(reconstructed-from-db)",
@@ -534,15 +912,11 @@ async function idempotentVerifyPath(backend, date, cloudRun, run, finish, opts) 
       jokes: stored.items,
     };
     try {
-      const recheck = validateDailyPackage(content, {
-        date,
-        recentJokes: await backend.recentForDupe(date),
-      });
-      // 来源 label 会固定为每日声明，已发布内容与之一致才可能通过；
-      // notice 是重建占位值，hash 不覆盖它，不影响比对
-      diffs = recheck.errors;
+      const { validateContent } = await import("../content-schema.ts");
+      validateContent(content); // notice 是重建占位值，hash 不覆盖它，不影响比对
+      diffs = [];
     } catch (e) {
-      diffs = [`已发布内容规则复检异常：${e.message}`];
+      diffs = [`已发布内容形状校验失败：${e.message}`];
     }
   }
   // 实际重算 hash 并与运行记录绑定比对（无论本地有无成品）
@@ -578,14 +952,14 @@ async function idempotentVerifyPath(backend, date, cloudRun, run, finish, opts) 
 
 /** 核验并收尾。 */
 async function verifyAndFinish(backend, date, content, run, finish, opts) {
-  const stored = await backend.readIssue(date);
+  const stored = await opts.readIssue(date);
   const diffs = stored ? comparePackage(content, stored) : ["发布后读回期次为空"];
   run.stage("verify", diffs.length ? "failed" : "ok", {
     diffs: diffs.length ? diffs : null, via: backend.kind,
   });
   if (diffs.length) {
     run.fail(`发布后核验不一致：${diffs.join("；")}`);
-    diffs.forEach((d) => progress(`MISMATCH ${d}`));
+    diffs.forEach((d) => opts.progress(`MISMATCH ${d}`));
     return finish("failed", EXIT.ERROR);
   }
   const http = await httpVerify(date, content, run, opts);

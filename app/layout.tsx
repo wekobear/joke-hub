@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import TopNav from "@/components/TopNav";
+import { SITE } from "@joke-hub/industry/site";
 
 export const metadata: Metadata = {
-  title: "每日笑话",
-  description: "每天一期，短笑话与长篇佳作，轻量阅读。",
+  title: SITE.name,
+  description: SITE.description,
 };
 
 // 主题引导：优先读取本地保存值，否则跟随系统；在首帧前执行避免闪烁。
@@ -21,7 +22,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         {children}
         <footer className="mt-8 border-t border-border">
           <div className="container flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-6 text-[13px] text-muted">
-            <span>每日笑话 · v0.3.0 · 已审核演示内容，自动采集调度未启动</span>
+            <span>{SITE.name} · v0.4.0 · 已审核演示内容，自动采集调度未启动</span>
             <span>
               吉祥物 blob 灵感来自{" "}
               <a

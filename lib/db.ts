@@ -1,42 +1,23 @@
+// server-only 数据层门面：网站读取统一走 @joke-hub/core 的 publication
+// 读取层（只读）。本文件只负责 web 侧的装配——SQLite 惰性初始化、Netlify
+// 临时目录回退与空库种子导入；管理操作（导入/认领/发布/审计）在 CLI 侧的
+// core/pipeline，绝不从这里暴露。
+// Supabase 读取用 anon key（RLS 限定 published），service key 绝不进入本模块。
+// 测试/持久化可用 JOKES_DB_PATH 指定 SQLite 库文件路径。
 import "server-only";
 import path from "node:path";
 import os from "node:os";
 import seedJson from "../content/seed.json";
+import { openDb } from "@joke-hub/core/store";
 import {
-  openDb,
-  importContent as storeImportContent,
-  listIssues as storeListIssues,
-  getIssue as storeGetIssue,
-  getLatestIssueWithJokes as storeGetLatestIssueWithJokes,
-  getNotice as storeGetNotice,
-  getJoke as storeGetJoke,
-  getJokesByIds as storeGetJokesByIds,
-  randomShortJoke as storeRandomShortJoke,
-  queryJokes as storeQueryJokes,
-  listCategories as storeListCategories,
-  type Issue,
-  type Joke,
-  type JokePage,
-  type JokeQuery,
-} from "./store.mjs";
-import {
-  supabaseReadConfig,
   SupabaseConfigError,
-  listIssues as sbListIssues,
-  getIssue as sbGetIssue,
-  getLatestIssueWithJokes as sbGetLatestIssueWithJokes,
-  getNotice as sbGetNotice,
-  getJoke as sbGetJoke,
-  getJokesByIds as sbGetJokesByIds,
-  randomShortJoke as sbRandomShortJoke,
-  queryJokes as sbQueryJokes,
-  listCategories as sbListCategories,
-} from "./supabase-store.mjs";
+  supabaseReadConfig,
+} from "@joke-hub/core/supabase-store";
+import { publicationReader } from "@joke-hub/core/publication";
+import type { Issue, Joke, JokePage, JokeQuery } from "@joke-hub/core/store";
 
-// server-only 数据层：读取请求统一走这里。Supabase 读取用 anon key（RLS 限定
-// published），service key 绝不进入本模块（写入口在 CLI：scripts/content-import.mjs）。
-// 测试/持久化可用 JOKES_DB_PATH 指定 SQLite 库文件路径。
 export type { Issue, Joke, JokePage, JokeQuery };
+export { SupabaseConfigError };
 
 // Netlify 等无持久磁盘的运行环境：默认库文件放到临时目录（函数实例内有效），
 // 本地开发/自托管仍保持 data/jokes.sqlite 不变；JOKES_DB_PATH 始终优先。
@@ -67,63 +48,54 @@ function getSqliteDb() {
   return sqliteDb;
 }
 
+const reader = publicationReader({ getDb: getSqliteDb });
+
 /** 当前读取后端；supabase = 配置了 SUPABASE_URL + anon key，sqlite = 本地模式。 */
 export function dataBackend(): "supabase" | "sqlite" {
   return supabaseReadConfig() ? "supabase" : "sqlite";
 }
-
-export { SupabaseConfigError };
 
 export function getDbPath(): string {
   return resolveDbPath();
 }
 
 export async function listIssues(): Promise<Issue[]> {
-  const cfg = supabaseReadConfig();
-  return cfg ? sbListIssues(cfg) : storeListIssues(getSqliteDb());
+  return reader.listIssues();
 }
 
 export async function getIssue(date: string): Promise<Issue | null> {
-  const cfg = supabaseReadConfig();
-  return cfg ? sbGetIssue(date, cfg) : storeGetIssue(getSqliteDb(), date);
+  return reader.getIssue(date);
 }
 
 export async function getLatestIssueWithJokes(): Promise<Issue | null> {
-  const cfg = supabaseReadConfig();
-  return cfg ? sbGetLatestIssueWithJokes(cfg) : storeGetLatestIssueWithJokes(getSqliteDb());
+  return reader.getLatestIssueWithJokes();
 }
 
 export async function getNotice(): Promise<string | null> {
-  const cfg = supabaseReadConfig();
-  return cfg ? sbGetNotice(cfg) : storeGetNotice(getSqliteDb());
+  return reader.getNotice();
 }
 
 export async function getJoke(id: string): Promise<Joke | null> {
-  const cfg = supabaseReadConfig();
-  return cfg ? sbGetJoke(id, cfg) : storeGetJoke(getSqliteDb(), id);
+  return reader.getJoke(id);
 }
 
 export async function getJokesByIds(ids: string[]): Promise<Joke[]> {
-  const cfg = supabaseReadConfig();
-  return cfg ? sbGetJokesByIds(ids, cfg) : storeGetJokesByIds(getSqliteDb(), ids);
+  return reader.getJokesByIds(ids);
 }
 
 export async function randomShortJoke(): Promise<Joke | null> {
-  const cfg = supabaseReadConfig();
-  return cfg ? sbRandomShortJoke(cfg) : storeRandomShortJoke(getSqliteDb());
+  return reader.randomShortJoke();
 }
 
 export async function queryJokes(q: JokeQuery): Promise<JokePage> {
-  const cfg = supabaseReadConfig();
-  return cfg ? sbQueryJokes(q, cfg) : storeQueryJokes(getSqliteDb(), q);
+  return reader.queryJokes(q);
 }
 
 export async function listCategories(): Promise<{ category: string; count: number }[]> {
-  const cfg = supabaseReadConfig();
-  return cfg ? sbListCategories(cfg) : storeListCategories(getSqliteDb());
+  return reader.listCategories();
 }
 
-/** CLI 专用（SQLite 模式）：Supabase 导入走 scripts/content-import.mjs 的 RPC 路径。 */
-export function importContent(raw: unknown): void {
-  storeImportContent(getSqliteDb(), raw);
+/** 一期 + 全部条目（新出口 RSS 用；与流水线读回核验同一实现）。 */
+export async function getIssueWithItems(date: string): Promise<{ issue: Issue; items: Joke[] } | null> {
+  return reader.getIssueWithItems(date);
 }

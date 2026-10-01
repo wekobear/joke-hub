@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import { spawn } from "node:child_process";
 import assert from "node:assert";
-import { openDb } from "../lib/store.mjs";
+import { openDb } from "@joke-hub/core/store";
 
 process.env.JOKES_DB_PATH = "data/selftest-api.sqlite";
 const TEST_DB = process.env.JOKES_DB_PATH;
@@ -85,6 +85,38 @@ try {
   for (const p of ["/", "/library", "/skill", "/jokes/umbrella"]) {
     const res = await fetch(base + p);
     ok(`页面 ${p} 200`, res.status === 200);
+  }
+
+  // 出口：RSS（含条件请求 304）
+  {
+    const res = await fetch(base + "/feed.xml");
+    const xml = await res.text();
+    ok("feed.xml 200 且为 RSS", res.status === 200 && xml.startsWith('<?xml') && xml.includes("<rss"));
+    ok("feed.xml 含最新期条目与 CDATA 全文", xml.includes("<item>") && xml.includes("<![CDATA["));
+    ok("feed.xml 条目数与最新期一致", (xml.match(/<item>/g) ?? []).length === daily.body.items.length);
+    const etag = res.headers.get("etag");
+    ok("feed.xml 带 ETag", Boolean(etag));
+    const cond = await fetch(base + "/feed.xml", { headers: { "if-none-match": etag } });
+    ok("feed.xml If-None-Match 命中 304", cond.status === 304);
+  }
+
+  // 出口：llms.txt
+  {
+    const res = await fetch(base + "/llms.txt");
+    const text = await res.text();
+    ok("llms.txt 200 且列出 API", res.status === 200 && text.includes("/api/v1/jokes") && text.includes("/feed.xml"));
+  }
+
+  // 出口：robots.txt + sitemap.xml（分页遍历全量）
+  {
+    const robots = await fetch(base + "/robots.txt");
+    const rtext = await robots.text();
+    ok("robots.txt 200 且指向 sitemap", robots.status === 200 && rtext.includes("Sitemap: ") && rtext.includes("/sitemap.xml"));
+    const sm = await fetch(base + "/sitemap.xml");
+    const stext = await sm.text();
+    const urls = (stext.match(/<loc>/g) ?? []).length;
+    ok("sitemap.xml 200 且含静态页与详情页",
+      sm.status === 200 && stext.includes("/library") && stext.includes("/jokes/umbrella") && urls >= 16);
   }
 } finally {
   server.kill();

@@ -429,3 +429,150 @@ export async function dailyPublish(content, date, contentHash, cfg = supabaseWri
   });
   return data;
 }
+
+// ---------- 判断账本（append-only，云端端） ----------
+// 表结构与权限见 supabase/migrations/20261001120000_joke_analyses.sql：
+// RLS 启用、anon 不可读、service_role 仅 SELECT/INSERT（数据库层面 append-only）。
+
+/**
+ * 追加一条审稿判断事件（幂等：event_id 重复即静默忽略）。
+ * 需 service key。返回 { duplicated } 供调用方区分重放与新写入。
+ */
+export async function saveAnalysis(rec, cfg = supabaseWriteConfig()) {
+  const body = {
+    event_id: rec.eventId,
+    run_date: rec.runDate,
+    run_id: rec.runId,
+    stage: rec.stage,
+    attempt: rec.attempt ?? 1,
+    outcome: rec.outcome,
+    verdict: rec.verdict === undefined ? null : Boolean(rec.verdict),
+    scores: rec.scores ?? null,
+    reasons: rec.reasons ?? [],
+    threshold_verdict: rec.thresholdVerdict === undefined ? null : Boolean(rec.thresholdVerdict),
+    content_hash: rec.contentHash ?? null,
+    prompt_version: rec.promptVersion,
+    policy_version: rec.policyVersion,
+    model: rec.model ?? null,
+    duration_ms: rec.durationMs ?? null,
+    usage: rec.usage ?? null,
+    raw_output: rec.rawOutput ?? null,
+  };
+  try {
+    await rest(cfg, "joke_analyses", { method: "POST", body, prefer: "return=minimal" });
+    return { duplicated: false };
+  } catch (e) {
+    // event_id 幂等：写入成功但响应丢失后的重试（唯一键冲突 23505 / 409）不算失败
+    if (e instanceof SupabaseApiError && (e.status === 409 || e.message.includes("23505"))) {
+      return { duplicated: true };
+    }
+    throw e;
+  }
+}
+
+// ---------- 采集物料池（云端端，v0.5.0） ----------
+// 表结构与权限见 supabase/migrations/20261002090000_joke_materials.sql。
+
+/** 批量入库：fingerprint 撞库（跨信源精确重复）静默跳过。需 service key。 */
+export async function insertMaterials(rows, cfg = supabaseWriteConfig()) {
+  if (!rows.length) return { inserted: 0, duplicates: 0 };
+  const body = rows.map((r) => ({
+    id: r.id, source_id: r.sourceId, lang: r.lang, title: r.title ?? null,
+    body: r.body, url: r.url ?? null, fingerprint: r.fingerprint,
+    collected_at: r.collectedAt ?? new Date().toISOString(),
+  }));
+  // ignore-duplicates 依据 fingerprint 唯一约束；return=representation 拿到实际插入行数
+  // PostgREST 默认只按主键消重；跨源正文去重键是 fingerprint，必须显式指定
+  const { data } = await rest(cfg, "joke_materials?on_conflict=fingerprint", {
+    method: "POST", body,
+    prefer: "resolution=ignore-duplicates,return=representation",
+  });
+  const inserted = Array.isArray(data) ? data.length : 0;
+  return { inserted, duplicates: rows.length - inserted };
+}
+
+/** 待评审物料（candidate 且未评审）。 */
+export async function listPendingJudgement(limit = 30, cfg = supabaseWriteConfig()) {
+  const search = qs([
+    ["select", "*"],
+    ["judged", "eq.false"],
+    ["status", "eq.candidate"],
+    ["order", "collected_at.asc"],
+    ["limit", String(limit)],
+  ]);
+  const { data } = await rest(cfg, `joke_materials?${search}`);
+  return (data ?? []).map(sbMaterialRow);
+}
+
+/** 应用评审结果：不达标 → status='skipped'，否则保持 candidate（与 SQLite 同语义）。
+ * 更新限定 judged=false：迟到的并发评审结果不得覆盖已评/已占用物料的终态。 */
+export async function applyJudgements(results, minScores, cfg = supabaseWriteConfig()) {
+  for (const r of results) {
+    const ok = r.fit === true && r.funniness >= minScores.funniness && r.safety >= minScores.safety;
+    await rest(cfg, `joke_materials?id=eq.${encodeURIComponent(r.id)}&judged=eq.false`, {
+      method: "PATCH",
+      body: {
+        judged: true, fit: r.fit === true, funniness: r.funniness, safety: r.safety,
+        category: r.category ?? null, judge_reason: r.reason ?? null,
+        status: ok ? "candidate" : "skipped",
+      },
+    });
+  }
+}
+
+/** 可入选物料：分数达标且仍为 candidate，按好笑度优先。 */
+export async function listEligibleMaterials(minScores, cfg = supabaseWriteConfig()) {
+  const search = qs([
+    ["select", "*"],
+    ["status", "eq.candidate"],
+    ["judged", "eq.true"],
+    ["fit", "eq.true"],
+    ["funniness", `gte.${minScores.funniness}`],
+    ["safety", `gte.${minScores.safety}`],
+    ["order", "funniness.desc,safety.desc,collected_at.asc"],
+    ["limit", "100"],
+  ]);
+  const { data } = await rest(cfg, `joke_materials?${search}`);
+  return (data ?? []).map(sbMaterialRow);
+}
+
+/**
+ * 事务型占用：仅接受"未占用"或"已属于同期"（幂等重跑）的物料；
+ * 任一条已被其他期占用 → 抛错（整批不落）。与 SQLite 版语义一致。
+ */
+export async function markMaterialsSelected(ids, issueDate, cfg = supabaseWriteConfig()) {
+  for (const id of ids) {
+    // 先尝试占用未占用的行
+    await rest(cfg, `joke_materials?id=eq.${encodeURIComponent(id)}&used_issue=is.null`, {
+      method: "PATCH",
+      body: { status: "selected", used_issue: issueDate },
+    });
+    // 校验该行现在的归属（幂等重跑 = 已属同期；否则是冲突）
+    const search = qs([["select", "used_issue"], ["id", eqOp(id)], ["limit", "1"]]);
+    const { data } = await rest(cfg, `joke_materials?${search}`);
+    const used = data?.[0]?.used_issue ?? null;
+    if (used !== issueDate) {
+      throw new Error(`物料 ${id} 已被 ${used} 占用，拒绝覆盖归属`);
+    }
+  }
+}
+
+/** 释放本期的占用（认领失败回滚用）：只回收仍归属本期的行。 */
+export async function releaseMaterialsSelection(ids, issueDate, cfg = supabaseWriteConfig()) {
+  if (!ids.length) return;
+  await rest(cfg, `joke_materials?id=${inOp(ids)}&used_issue=eq.${issueDate}`, {
+    method: "PATCH",
+    body: { status: "candidate", used_issue: null },
+  });
+}
+
+function sbMaterialRow(r) {
+  return {
+    id: r.id, sourceId: r.source_id, lang: r.lang, title: r.title,
+    body: r.body, url: r.url, fingerprint: r.fingerprint,
+    collectedAt: r.collected_at, judged: !!r.judged,
+    fit: r.fit === null ? null : !!r.fit,
+    funniness: r.funniness, safety: r.safety, category: r.category,
+    judgeReason: r.judge_reason, status: r.status, usedIssue: r.used_issue,
+  };
+}

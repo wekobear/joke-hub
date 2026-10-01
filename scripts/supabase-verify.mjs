@@ -30,8 +30,8 @@ import crypto from "node:crypto";
 import {
   rest, SupabaseApiError,
   getJoke, getIssue, queryJokes, randomShortJoke,
-} from "../lib/supabase-store.mjs";
-import { validateContent } from "../lib/content-schema.ts";
+} from "@joke-hub/core/supabase-store";
+import { validateContent } from "@joke-hub/core/content-schema";
 
 const CONFIRM_FLAG = "--confirm-test-project";
 const MARKER = "__jokehub_verify__";

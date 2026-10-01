@@ -1,36 +1,29 @@
 // 每日内容包独立校验器：程序化硬校验（不是模型自报）。
 // 校验失败一律拒绝发布。收集全部错误而不是首错即停，便于一次修稿。
 //
+// v0.5.0 配比合同：10 短 + 1 脱口秀；短内容 = 采集改编（目标 8，可降级到 0）
+// + 原创（基线 2，采集不足时补足）。
 // 校验层次：
-//   1. 复用 lib/content-schema.ts 的通用内容包 schema（与网站同一套）
-//   2. 每日合同：日期唯一、条数构成（10 短 + 1 脱口秀）、日期一致、期次引用完整
-//   3. 原创合同：来源固定声明、id 精确命名（daily-<当日>-s01..s10/-talk 且与
-//      format 绑定）、无外链/引用痕迹
+//   1. 复用 content-schema.ts 的通用内容包 schema（与网站同一套）
+//   2. 每日合同：日期唯一、总条数与短内容条数、日期一致、期次引用完整
+//   3. 来源合同：采集条目 kind=adapted 且带有效原文链接；原创条目（短内容与
+//      脱口秀）kind=original + 固定声明 + url 为 null；id 精确命名
+//      （daily-<当日>-s01..sNN/-talk 且与 format 绑定）；无外链/引用痕迹
 //   4. 分类白名单与长度边界
 //   5. 查重：近期历史 + 本批次内部（标题精确、正文归一化精确、字符 bigram 相似度）
 
 import { validateContent } from "../content-schema.ts";
 import {
-  DAILY_REQUIREMENT, DAILY_SOURCE, DAILY_CATEGORIES,
+  DAILY_REQUIREMENT, DAILY_SOURCE, DAILY_CATEGORIES, LIMITS,
   DUPE_LOOKBACK_DAYS, DUPE_SIMILARITY_THRESHOLD,
   normalizeText, bigramSimilarity,
 } from "./config.mjs";
 
 const TALK = "脱口秀";
 const SHORT = "短笑话";
-const CROSSTALK = "相声";
-const SATIRE = "讽刺对话";
 
 const URL_LIKE = /(https?:\/\/|www\.|\[[^\]]+\]\([^)]+\))/i;
 const CITATION_LIKE = /(出自|来源[:：]|摘自|选自|转载|改编自|引自)/;
-
-const LIMITS = {
-  title: [2, 30],
-  shortBody: [30, 600],
-  talkBody: [300, 5000],
-  issueTitle: [2, 30],
-  issueDescription: [4, 60],
-};
 
 /** 目标日期必须有效：这是调用方合同，无效时明确抛错而不是生成一堆误导性校验错误。 */
 export function assertTargetDate(date) {
@@ -85,27 +78,29 @@ export function validateDailyPackage(raw, { date, recentJokes = [] } = {}) {
     }
   }
 
-  // 2b. 条目构成
+  // 2b. 条目构成：总数 + 脱口秀恰好 1 + 短内容恰好 N + 采集/原创配比
   if (jokes.length !== DAILY_REQUIREMENT.shortCount + DAILY_REQUIREMENT.talkCount) {
     add(`条目总数必须为 ${DAILY_REQUIREMENT.shortCount + DAILY_REQUIREMENT.talkCount}，收到 ${jokes.length}`);
   }
-  const byFormat = { [SHORT]: 0, [CROSSTALK]: 0, [SATIRE]: 0, [TALK]: 0 };
+  const byFormat = {};
   for (const j of jokes) byFormat[j.format] = (byFormat[j.format] ?? 0) + 1;
   if (byFormat[TALK] !== DAILY_REQUIREMENT.talkCount) {
-    add(`脱口秀必须恰好 ${DAILY_REQUIREMENT.talkCount} 条，收到 ${byFormat[TALK]}`);
+    add(`脱口秀必须恰好 ${DAILY_REQUIREMENT.talkCount} 条，收到 ${byFormat[TALK] ?? 0}`);
   }
-  const shorts = byFormat[SHORT] + byFormat[CROSSTALK] + byFormat[SATIRE];
-  if (shorts !== DAILY_REQUIREMENT.shortCount) {
-    add(`短内容必须恰好 ${DAILY_REQUIREMENT.shortCount} 条，收到 ${shorts}`);
+  const shorts = jokes.filter((j) => j.format !== TALK);
+  if (shorts.length !== DAILY_REQUIREMENT.shortCount) {
+    add(`短内容必须恰好 ${DAILY_REQUIREMENT.shortCount} 条，收到 ${shorts.length}`);
   }
-  if (byFormat[CROSSTALK] < DAILY_REQUIREMENT.minCrosstalk) {
-    add(`相声至少 ${DAILY_REQUIREMENT.minCrosstalk} 条，收到 ${byFormat[CROSSTALK]}`);
+  const adaptedShorts = shorts.filter((j) => j.source.kind === "adapted");
+  const originalShorts = shorts.filter((j) => j.source.kind === "original");
+  if (adaptedShorts.length > DAILY_REQUIREMENT.collectedShortCount) {
+    add(`采集改编短内容至多 ${DAILY_REQUIREMENT.collectedShortCount} 条，收到 ${adaptedShorts.length}`);
   }
-  if (byFormat[SATIRE] < DAILY_REQUIREMENT.minSatire) {
-    add(`讽刺对话至少 ${DAILY_REQUIREMENT.minSatire} 条，收到 ${byFormat[SATIRE]}`);
+  if (originalShorts.length < 1) {
+    add(`原创短内容至少 1 条（每日刊的原创底线），收到 ${originalShorts.length}`);
   }
-  if (byFormat[SHORT] < DAILY_REQUIREMENT.minShortJokes) {
-    add(`短笑话至少 ${DAILY_REQUIREMENT.minShortJokes} 条，收到 ${byFormat[SHORT]}`);
+  if (adaptedShorts.length + originalShorts.length !== shorts.length) {
+    add(`短内容 source.kind 只能是 adapted/original`);
   }
 
   // 3/4. 逐条合同：日期、来源、id（精确日期 + 序号 01..10/talk + format 绑定）、
@@ -122,6 +117,9 @@ export function validateDailyPackage(raw, { date, recentJokes = [] } = {}) {
       add(`${tag}.id 必须形如 daily-${dateCompact}-s01..s${String(DAILY_REQUIREMENT.shortCount).padStart(2, "0")}（短内容）或 daily-${dateCompact}-talk（脱口秀）`);
     } else if (m[1] === "talk") {
       if (j.format !== TALK) add(`${tag} 用了 talk id 但 format 是 ${j.format}`);
+      if (j.source.kind !== DAILY_SOURCE.kind) {
+        add(`${tag}.source.kind 必须是 original（脱口秀必须原创）`);
+      }
       if (seenTalkId) add(`脱口秀 id 重复: ${j.id}`);
       seenTalkId = true;
     } else {
@@ -134,14 +132,23 @@ export function validateDailyPackage(raw, { date, recentJokes = [] } = {}) {
       seenShortSeq.add(seq);
     }
 
-    if (j.source.kind !== DAILY_SOURCE.kind) {
-      add(`${tag}.source.kind 必须是 ${DAILY_SOURCE.kind}（每日内容必须原创）`);
-    }
-    if (j.source.url !== DAILY_SOURCE.url) {
-      add(`${tag}.source.url 必须为 null（原创内容不挂外链）`);
-    }
-    if (j.source.label !== DAILY_SOURCE.label) {
-      add(`${tag}.source.label 必须是固定声明 "${DAILY_SOURCE.label}"`);
+    // 来源合同（v0.5 双轨）：原创 = 固定声明 + 无外链；采集改编 = 有效原文链接 + 非空来源名
+    if (j.source.kind === "original") {
+      if (j.source.url !== null) {
+        add(`${tag}.source.url 必须为 null（原创内容不挂外链）`);
+      }
+      if (j.source.label !== DAILY_SOURCE.label) {
+        add(`${tag}.source.label 必须是固定声明 "${DAILY_SOURCE.label}"`);
+      }
+    } else if (j.source.kind === "adapted") {
+      if (typeof j.source.url !== "string" || !/^https?:\/\/\S+$/.test(j.source.url)) {
+        add(`${tag}.source.url 必须是有效的 http(s) 原文链接（采集改编内容必须可溯源）`);
+      }
+      if (typeof j.source.label !== "string" || !j.source.label.trim()) {
+        add(`${tag}.source.label 必须是非空来源名`);
+      }
+    } else {
+      add(`${tag}.source.kind 必须是 original 或 adapted，收到 ${j.source.kind}`);
     }
     if (!DAILY_CATEGORIES.includes(j.category)) {
       add(`${tag}.category "${j.category}" 不在白名单：${DAILY_CATEGORIES.join("/")}`);

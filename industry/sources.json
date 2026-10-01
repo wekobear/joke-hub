@@ -1,0 +1,63 @@
+{
+  "$comment": "信源注册表（v0.5.0）。格式与接入方法见 docs/COLLECTION.md。kind 三种：json_api（每次调用返回列表的实时接口）/ json_list（静态 JSON 数组文件，整份下载后本地缓存采样）/ csv_quote（CSV 引号字段采样，按字节区间随机取样）。全部信源免注册免 key；lang=en 的信源内容在成刊时由模型本地化改编为中文并保留来源归属。enabled=false 可临时停用。",
+  "sources": [
+    {
+      "id": "hf-chinese-joke",
+      "name": "HF 中文笑话语料",
+      "kind": "csv_quote",
+      "lang": "zh",
+      "enabled": true,
+      "config": {
+        "url": "https://huggingface.co/datasets/notsobad9527/chinese-joke/resolve/main/jokes.csv",
+        "fileSize": 7113925,
+        "link": "https://huggingface.co/datasets/notsobad9527/chinese-joke",
+        "sampleBytes": 262144,
+        "maxTake": 6
+      }
+    },
+    {
+      "id": "official-joke-api",
+      "name": "Official Joke API",
+      "kind": "json_api",
+      "lang": "en",
+      "enabled": true,
+      "config": {
+        "url": "https://official-joke-api.appspot.com/random_ten",
+        "link": "https://official-joke-api.appspot.com",
+        "combine": ["setup", "punchline"],
+        "titleFrom": "setup",
+        "maxTake": 4
+      }
+    },
+    {
+      "id": "jokeapi-net",
+      "name": "JokeAPI v2",
+      "kind": "json_api",
+      "lang": "en",
+      "enabled": true,
+      "config": {
+        "url": "https://v2.jokeapi.net/joke/Miscellaneous,Pun?blacklistFlags=nsfw,racist,sexist,explicit&amount=10",
+        "listPath": "jokes",
+        "link": "https://v2.jokeapi.net",
+        "combine": ["setup", "delivery"],
+        "titleFrom": "setup",
+        "maxTake": 3
+      }
+    },
+    {
+      "id": "taivop-stupidstuff",
+      "name": "stupidstuff 笑话集（GitHub 数据集）",
+      "kind": "json_list",
+      "lang": "en",
+      "enabled": true,
+      "config": {
+        "url": "https://cdn.jsdelivr.net/gh/taivop/joke-dataset@master/stupidstuff.json",
+        "link": "https://github.com/taivop/joke-dataset",
+        "itemTitle": "title",
+        "itemBody": "body",
+        "cacheDays": 7,
+        "maxTake": 3
+      }
+    }
+  ]
+}

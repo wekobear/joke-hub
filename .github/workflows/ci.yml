@@ -21,5 +21,6 @@ jobs:
       - run: npm run selftest
       - run: npm run daily-selftest
       - run: node scripts/hash-stable-regression.mjs
+      - run: npm run selection-eval
       - run: npm run build
       - run: npm run api-test

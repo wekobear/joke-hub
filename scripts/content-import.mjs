@@ -7,11 +7,11 @@
 //   --status     仅 Supabase 模式：draft（先入库不公开）| published（默认，兼容老包）。
 // SQL 与校验全部复用 lib/store.mjs / lib/supabase-store.mjs，与网站同一套实现。
 import fs from "node:fs";
-import { openDb, importContent, defaultDbPath } from "../lib/store.mjs";
+import { openDb, importContent, defaultDbPath } from "@joke-hub/core/store";
 import {
   importContent as sbImportContent,
   supabaseReadConfig,
-} from "../lib/supabase-store.mjs";
+} from "@joke-hub/core/supabase-store";
 
 const args = process.argv.slice(2);
 const file = args.find((a) => !a.startsWith("--"));

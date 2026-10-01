@@ -3,7 +3,7 @@ const base = "http://127.0.0.1:4310";
 const checks = [
   ["/api/v1/daily", 200],
   ["/api/v1/jokes?q=%E9%9D%A2%E8%AF%95", 200],
-  ["/api/v1/jokes/ex001", 200],
+  ["/api/v1/jokes/umbrella", 200],
   ["/api/v1/jokes?page=0", 400],
   ["/api/v1/jokes?limit=99", 400],
   ["/api/v1/daily?date=2026-9-9", 400],
@@ -12,9 +12,13 @@ const checks = [
   ["/api/v1/random", 200],
   ["/", 200],
   ["/library", 200],
-  ["/jokes/ex001", 200],
+  ["/jokes/umbrella", 200],
   ["/skill", 200],
   ["/downloads/jokes-v0.5.0.zip", 200],
+  ["/feed.xml", 200],
+  ["/llms.txt", 200],
+  ["/robots.txt", 200],
+  ["/sitemap.xml", 200],
 ];
 let fail = 0;
 for (const [path, expect] of checks) {

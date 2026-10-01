@@ -42,6 +42,46 @@ const SCHEMA_SQL = `
     published_at TEXT,
     updated_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS materials (
+    id TEXT PRIMARY KEY,
+    source_id TEXT NOT NULL,
+    lang TEXT NOT NULL,
+    title TEXT,
+    body TEXT NOT NULL,
+    url TEXT,
+    fingerprint TEXT NOT NULL UNIQUE,
+    collected_at TEXT NOT NULL,
+    judged INTEGER NOT NULL DEFAULT 0,
+    fit INTEGER,
+    funniness INTEGER,
+    safety INTEGER,
+    category TEXT,
+    judge_reason TEXT,
+    status TEXT NOT NULL DEFAULT 'candidate' CHECK (status IN ('candidate','selected','skipped')),
+    used_issue TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_materials_status ON materials(status);
+  CREATE TABLE IF NOT EXISTS analyses (
+    event_id TEXT PRIMARY KEY,
+    run_date TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    stage TEXT NOT NULL CHECK (stage IN ('review','review-rebind')),
+    attempt INTEGER NOT NULL DEFAULT 1,
+    outcome TEXT NOT NULL CHECK (outcome IN ('pass','reject','error')),
+    verdict INTEGER,
+    scores TEXT,
+    reasons TEXT NOT NULL DEFAULT '[]',
+    threshold_verdict INTEGER,
+    content_hash TEXT,
+    prompt_version TEXT NOT NULL,
+    policy_version TEXT NOT NULL,
+    model TEXT,
+    duration_ms INTEGER,
+    usage TEXT,
+    raw_output TEXT,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_analyses_run_date ON analyses(run_date);
   CREATE INDEX IF NOT EXISTS idx_jokes_date ON jokes(date);
   CREATE INDEX IF NOT EXISTS idx_jokes_format ON jokes(format);
 `;
@@ -398,4 +438,179 @@ export function recentJokesForDupe(d, beforeDate, lookbackDays) {
       beforeDate,
     );
   return rows;
+}
+
+// ---------- 判断账本（append-only，本地 SQLite 端） ----------
+// 与 supabase/migrations/20261001120000_joke_analyses.sql 字段一一对应；
+// event_id 客户端生成、主键去重：写入成功但响应丢失后重试不会重复插入。
+
+/** 追加一条审稿判断事件。幂等（同 event_id 静默忽略），不支持更新/删除。 */
+export function saveAnalysis(d, rec) {
+  d.prepare(`
+    INSERT INTO analyses (event_id, run_date, run_id, stage, attempt, outcome, verdict,
+      scores, reasons, threshold_verdict, content_hash, prompt_version, policy_version,
+      model, duration_ms, usage, raw_output, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(event_id) DO NOTHING
+  `).run(
+    rec.eventId, rec.runDate, rec.runId, rec.stage, rec.attempt ?? 1, rec.outcome,
+    rec.verdict === undefined || rec.verdict === null ? null : (rec.verdict ? 1 : 0),
+    rec.scores == null ? null : JSON.stringify(rec.scores),
+    JSON.stringify(rec.reasons ?? []),
+    rec.thresholdVerdict === undefined || rec.thresholdVerdict === null ? null : (rec.thresholdVerdict ? 1 : 0),
+    rec.contentHash ?? null, rec.promptVersion, rec.policyVersion,
+    rec.model ?? null, rec.durationMs ?? null,
+    rec.usage == null ? null : JSON.stringify(rec.usage),
+    rec.rawOutput == null ? null : JSON.stringify(rec.rawOutput),
+    new Date().toISOString(),
+  );
+}
+
+/** 某日期的全部判断事件（时间正序），供测试与人工审计。 */
+export function listAnalyses(d, runDate) {
+  const rows = d
+    .prepare("SELECT * FROM analyses WHERE run_date = ? ORDER BY created_at ASC, event_id ASC")
+    .all(runDate);
+  return rows.map((r) => ({
+    eventId: r.event_id,
+    runDate: r.run_date,
+    runId: r.run_id,
+    stage: r.stage,
+    attempt: r.attempt,
+    outcome: r.outcome,
+    verdict: r.verdict === null ? null : !!r.verdict,
+    scores: r.scores === null ? null : JSON.parse(r.scores),
+    reasons: JSON.parse(r.reasons ?? "[]"),
+    thresholdVerdict: r.threshold_verdict === null ? null : !!r.threshold_verdict,
+    contentHash: r.content_hash,
+    promptVersion: r.prompt_version,
+    policyVersion: r.policy_version,
+    model: r.model,
+    durationMs: r.duration_ms,
+    usage: r.usage === null ? null : JSON.parse(r.usage),
+    rawOutput: r.raw_output === null ? null : JSON.parse(r.raw_output),
+    createdAt: r.created_at,
+  }));
+}
+
+// ---------- 采集物料池（v0.5.0） ----------
+// 字段与 supabase/migrations/20261002090000_joke_materials.sql 一一对应。
+// 与 analyses 的 append-only 不同：物料有 curation 状态流转
+// （candidate → selected/skipped），因此允许 UPDATE（仅 service/CLI 侧可达）。
+
+/** 批量入库：fingerprint 撞库（跨信源精确重复）静默跳过。返回 {inserted, duplicates}。 */
+export function insertMaterials(d, rows) {
+  const stmt = d.prepare(`
+    INSERT INTO materials (id, source_id, lang, title, body, url, fingerprint, collected_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(fingerprint) DO NOTHING
+  `);
+  let inserted = 0;
+  for (const r of rows) {
+    inserted += stmt.run(
+      r.id, r.sourceId, r.lang, r.title ?? null, r.body, r.url ?? null,
+      r.fingerprint, r.collectedAt ?? new Date().toISOString(),
+    ).changes;
+  }
+  return { inserted, duplicates: rows.length - inserted };
+}
+
+/** 待评审物料（candidate 且未评审），按入库先后，至多 limit 条。 */
+export function listPendingJudgement(d, limit = 30) {
+  const rows = d
+    .prepare("SELECT * FROM materials WHERE judged = 0 AND status = 'candidate' ORDER BY collected_at ASC LIMIT ?")
+    .all(limit);
+  return rows.map(materialRowToObj);
+}
+
+/**
+ * 应用评审结果：fit=false 或任一分数低于门槛 → status='skipped'（理由入 judge_reason）；
+ * 否则保持 candidate 待选。
+ */
+export function applyJudgements(d, results, minScores) {
+  // 更新限定 judged=0：迟到的并发评审结果不得覆盖已评/已占用物料的终态
+  const stmt = d.prepare(`
+    UPDATE materials SET judged = 1, fit = ?, funniness = ?, safety = ?, category = ?,
+      judge_reason = ?, status = ? WHERE id = ? AND judged = 0
+  `);
+  for (const r of results) {
+    const ok = r.fit === true
+      && r.funniness >= minScores.funniness
+      && r.safety >= minScores.safety;
+    stmt.run(
+      r.fit ? 1 : 0, r.funniness, r.safety, r.category ?? null,
+      r.reason ?? null, ok ? "candidate" : "skipped", r.id,
+    );
+  }
+}
+
+/** 可入选物料：已评审 fit 且分数达标且仍为 candidate，按好笑度优先。 */
+export function listEligibleMaterials(d, minScores) {
+  const rows = d
+    .prepare(`
+      SELECT * FROM materials
+      WHERE status = 'candidate' AND judged = 1 AND fit = 1
+        AND funniness >= ? AND safety >= ?
+      ORDER BY funniness DESC, safety DESC, collected_at ASC
+    `)
+    .all(minScores.funniness, minScores.safety);
+  return rows.map(materialRowToObj);
+}
+
+/**
+ * 事务型占用（v0.5.1）：仅接受"未占用"或"已属于同期"（幂等重跑）的物料；
+ * 任一条已被其他期占用 → 整批回滚并抛错（不覆盖他期归属）。
+ */
+export function markMaterialsSelected(d, ids, issueDate) {
+  if (!ids.length) return;
+  d.exec("BEGIN IMMEDIATE");
+  try {
+    const stmt = d.prepare(`
+      UPDATE materials SET status = 'selected', used_issue = ?
+      WHERE id = ? AND (used_issue IS NULL OR used_issue = ?)
+    `);
+    for (const id of ids) {
+      if (stmt.run(issueDate, id, issueDate).changes === 0) {
+        const row = d.prepare("SELECT used_issue FROM materials WHERE id = ?").get(id);
+        throw new Error(`物料 ${id} 已被 ${row?.used_issue ?? "(不存在)"} 占用，拒绝覆盖归属`);
+      }
+    }
+    d.exec("COMMIT");
+  } catch (e) {
+    d.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/** 释放本期的占用（认领失败回滚用）：只回收仍归属本期的行。 */
+export function releaseMaterialsSelection(d, ids, issueDate) {
+  if (!ids.length) return;
+  const stmt = d.prepare(
+    "UPDATE materials SET status = 'candidate', used_issue = NULL WHERE id = ? AND used_issue = ?",
+  );
+  for (const id of ids) stmt.run(id, issueDate);
+}
+
+/** 物料池统计（采集命令与运行记录用）。 */
+export function materialsStats(d) {
+  const row = d.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM materials) AS total,
+      (SELECT COUNT(*) FROM materials WHERE status = 'candidate' AND judged = 1 AND fit = 1) AS eligible,
+      (SELECT COUNT(*) FROM materials WHERE judged = 0) AS pending,
+      (SELECT COUNT(*) FROM materials WHERE status = 'skipped') AS skipped,
+      (SELECT COUNT(*) FROM materials WHERE status = 'selected') AS selected
+  `).get();
+  return row;
+}
+
+function materialRowToObj(r) {
+  return {
+    id: r.id, sourceId: r.source_id, lang: r.lang, title: r.title,
+    body: r.body, url: r.url, fingerprint: r.fingerprint,
+    collectedAt: r.collected_at, judged: !!r.judged,
+    fit: r.fit === null ? null : !!r.fit,
+    funniness: r.funniness, safety: r.safety, category: r.category,
+    judgeReason: r.judge_reason, status: r.status, usedIssue: r.used_issue,
+  };
 }

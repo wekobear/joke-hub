@@ -1,0 +1,19 @@
+{
+  "name": "@joke-hub/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "领域层：存储适配器（SQLite / Supabase）、公开读取层（publication）、每日流水线（pipeline）与出口生成器（outlets）。",
+  "exports": {
+    "./content-schema": "./src/content-schema.ts",
+    "./store": "./src/store.mjs",
+    "./store.d.mts": "./src/store.d.mts",
+    "./supabase-store": "./src/supabase-store.mjs",
+    "./publication": "./src/publication.mjs",
+    "./pipeline": "./src/pipeline/index.mjs",
+    "./outlets/*": "./src/outlets/*.mjs"
+  },
+  "dependencies": {
+    "@joke-hub/industry": "*"
+  }
+}

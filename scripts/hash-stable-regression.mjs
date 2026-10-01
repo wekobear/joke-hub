@@ -8,7 +8,7 @@
 //   5. 键序不同 → hash 不变（canonicalJson 原有语义）
 
 import assert from "node:assert";
-import { contentHashStable } from "../lib/daily/config.mjs";
+import { contentHashStable } from "@joke-hub/core/pipeline";
 
 const jokes = (ids) => ids.map((id) => ({ id, text: `笑话正文 ${id}` }));
 const issue = (date, jokeIds) => ({ date, title: "测试一期", description: "回归用描述", jokeIds });

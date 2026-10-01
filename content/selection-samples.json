@@ -1,0 +1,147 @@
+{
+  "$comment": "selection-eval 门槛校准样本：samples 校准整期审稿门槛（originality/funniness/safety），collectedSamples 校准采集门槛（fit/funniness/safety）。改 industry/selection.ts 前先跑 npm run selection-eval。样本应持续用真实输出补充。",
+  "samples": [
+    {
+      "id": "s1",
+      "label": "good",
+      "scores": {
+        "originality": 9,
+        "funniness": 9,
+        "safety": 10
+      },
+      "note": "典型好稿"
+    },
+    {
+      "id": "s2",
+      "label": "good",
+      "scores": {
+        "originality": 8,
+        "funniness": 7,
+        "safety": 9
+      },
+      "note": "踩线好稿（全部等于门槛）"
+    },
+    {
+      "id": "s3",
+      "label": "good",
+      "scores": {
+        "originality": 10,
+        "funniness": 8,
+        "safety": 10
+      },
+      "note": "高质量原创"
+    },
+    {
+      "id": "s4",
+      "label": "bad",
+      "scores": {
+        "originality": 5,
+        "funniness": 8,
+        "safety": 9
+      },
+      "note": "疑似搬运换皮"
+    },
+    {
+      "id": "s5",
+      "label": "bad",
+      "scores": {
+        "originality": 8,
+        "funniness": 4,
+        "safety": 9
+      },
+      "note": "笑点不成立"
+    },
+    {
+      "id": "s6",
+      "label": "bad",
+      "scores": {
+        "originality": 9,
+        "funniness": 9,
+        "safety": 5
+      },
+      "note": "题材安全风险"
+    },
+    {
+      "id": "s7",
+      "label": "border",
+      "scores": {
+        "originality": 7,
+        "funniness": 6,
+        "safety": 9
+      },
+      "note": "边界：笑点勉强"
+    },
+    {
+      "id": "s8",
+      "label": "border",
+      "scores": {
+        "originality": 6,
+        "funniness": 8,
+        "safety": 9
+      },
+      "note": "边界：原创性存疑但好笑"
+    }
+  ],
+  "collectedSamples": [
+    {
+      "id": "c1",
+      "label": "good",
+      "fit": true,
+      "scores": {
+        "funniness": 8,
+        "safety": 10
+      },
+      "note": "干净好笑"
+    },
+    {
+      "id": "c2",
+      "label": "good",
+      "fit": true,
+      "scores": {
+        "funniness": 7,
+        "safety": 9
+      },
+      "note": "踩线通过"
+    },
+    {
+      "id": "c3",
+      "label": "bad",
+      "fit": false,
+      "scores": {
+        "funniness": 4,
+        "safety": 9
+      },
+      "note": "不好笑"
+    },
+    {
+      "id": "c4",
+      "label": "bad",
+      "fit": true,
+      "scores": {
+        "funniness": 9,
+        "safety": 5
+      },
+      "note": "好笑但擦边"
+    },
+    {
+      "id": "c5",
+      "label": "bad",
+      "fit": false,
+      "scores": {
+        "funniness": 6,
+        "safety": 8
+      },
+      "note": "fit=false 一票否决"
+    },
+    {
+      "id": "c6",
+      "label": "border",
+      "fit": true,
+      "scores": {
+        "funniness": 6,
+        "safety": 10
+      },
+      "note": "边界：好笑度存疑"
+    }
+  ]
+}

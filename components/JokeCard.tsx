@@ -47,6 +47,22 @@ export default function JokeCard({
             <Chip size="sm" variant="soft">
               <Chip.Label>{joke.category}</Chip.Label>
             </Chip>
+            {joke.source.kind === "adapted" && (
+              <span className="text-[12px] text-muted">
+                {joke.source.url ? (
+                  <a
+                    href={joke.source.url}
+                    target="_blank"
+                    rel="noreferrer nofollow"
+                    className="underline decoration-dotted underline-offset-4 hover:text-accent"
+                  >
+                    {joke.source.label} ↗
+                  </a>
+                ) : (
+                  joke.source.label
+                )}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <FavoriteButton
