@@ -97,8 +97,10 @@ npm run content:import -- path/to/issue.json
 每期配比为 **8 条采集改编 + 2 条原创 + 1 段原创脱口秀**：外部信源的笑话经
 模型评审（好笑度/安全度打分 + 门槛）与本地化改编（英文内容翻译成自然中文、
 中文内容轻度润色）后进入每日刊，条目标注来源与原文链接（`kind=adapted`）；
-采集不足时自动降级为原创补足，公开 API 形状不变。信源清单（含实测状态）、
-架构说明与新增信源方法见 [docs/COLLECTION.md](docs/COLLECTION.md)。
+采集不足时自动降级为原创补足，公开 API 形状不变。信源含实时中文源（B站热门
+神评）、静态中文语料与英文源；另有当日热搜话题源，在生产原创部分时注入
+时效性题材（尽力而为，失败不阻断发布）。信源清单（含实测状态）、架构说明
+与新增信源方法见 [docs/COLLECTION.md](docs/COLLECTION.md)。
 
 ```bash
 npm run collect                 # 采集一轮：抓取 → 清洗 → 判重入库 → 模型评审
@@ -113,7 +115,7 @@ industry/            配置包（改定位只改这里，不改代码）
   taxonomy.ts        分类白名单、配比（8 采集 + 2 原创 + 1 脱口秀）、长度边界、发布门禁
   selection.ts       审稿量化门槛、采集门槛、查重参数（改前先跑 npm run selection-eval）
   features.ts        出口开关（rss / llmsTxt / seo）
-  sources.json       采集信源注册表（json_api / json_list / csv_quote 三种读取器）
+  sources.json       采集信源与热点话题源注册表（json_api / json_list / csv_quote / bilibili_comments）
   prompts/*.md       生产/修稿/审稿/采集评审/本地化改编提示词（{{var}} 模板 + 版本哈希）
 packages/core/       领域层
   src/publication    公开读取层：web / API / RSS / llms.txt / sitemap 唯一数据源（只读）
@@ -227,7 +229,9 @@ npm run daily -- --status        # 查看该日期运行状态
   生产、不重写）；hash 不同 → 拒绝覆盖已发布内容（exit 4）
 - **配比（v0.5.0）**：每期 = 8 条采集改编（外部信源，经评审与本地化，标注
   来源链接）+ 2 条原创短内容 + 1 段原创脱口秀；采集不足自动降级为原创补足
-  （原创底线 ≥1 条）；先用 `npm run collect` 充实物料池
+  （原创底线 ≥1 条）；先用 `npm run collect` 充实物料池。生产前会抓取一次当日
+  热搜话题作为原创部分的时效性题材参考（尽力而为，失败不阻断；已发布幂等
+  路径不触发任何抓取）
 - **校验拒绝不发布**：总条数与配比、日期/ID 精确匹配、分类白名单、来源合同
   （采集必须带有效原文链接、原创必须固定声明且无外链）、长度边界、
   外链/引用痕迹、近期 14 天与当批内部查重；独立 CLI 审稿（与生产无共享上下文）

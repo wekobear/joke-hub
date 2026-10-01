@@ -27,6 +27,7 @@ import {
 import {
   RunRecord, newRunId, acquireLock, releaseLock,
   loadLatestRun, loadValidatedPackage, saveValidatedPackage, saveRejectedPackage,
+  invalidateValidatedPackage,
 } from "./runs.mjs";
 
 function lockDbPathSafe() {
@@ -125,10 +126,10 @@ function buildAnalysisEvent({ date, runId, stage, attempt, verdict: v, threshold
 
 // ---------- 依赖：真实实现（本地 claude CLI） ----------
 
-async function realProduce({ date, originalShortCount, collectedCount, recentTitles, reasons, previousJson }) {
+async function realProduce({ date, originalShortCount, collectedCount, recentTitles, topics, reasons, previousJson }) {
   const prompt = reasons
-    ? buildRevisePrompt({ date, originalShortCount, collectedCount, recentTitles, previousJson: previousJson ?? "", reasons })
-    : buildProducePrompt({ date, originalShortCount, collectedCount, recentTitles });
+    ? buildRevisePrompt({ date, originalShortCount, collectedCount, recentTitles, topics, previousJson: previousJson ?? "", reasons })
+    : buildProducePrompt({ date, originalShortCount, collectedCount, recentTitles, topics });
   const { text } = await runClaudeText(prompt, { timeoutMs: 900_000, label: "produce" });
   return extractJson(text, { label: "produce" });
 }
@@ -651,6 +652,30 @@ export async function runPipeline(options = {}, deps = {}) {
       }
     }
 
+    // v0.5.2：当日热点话题（时效性题材参考）——只在需要生产时抓取一次，
+    // 修稿轮复用；尽力而为：全部话题源失败也不阻断发布链路（当期回到日常题材）。
+    // 已发布幂等路径与复用路径不触发任何抓取。
+    let topics = [];
+    if (!content) {
+      try {
+        if (deps.topics) {
+          topics = await deps.topics();
+        } else {
+          const { fetchTopics } = await import("../sources/topics.mjs");
+          const r = await fetchTopics();
+          topics = r.topics;
+          const failed = r.stats.filter((s) => !s.ok);
+          if (failed.length) {
+            progress(`WARN 话题源失败（已隔离）：${failed.map((s) => `${s.id}(${s.error})`).join("、")}`);
+          }
+        }
+      } catch (e) {
+        progress(`WARN 话题获取失败（本次不依赖热点）：${e.message}`);
+        topics = [];
+      }
+      run.stage("topics", "ok", { count: topics.length });
+    }
+
     // v0.5：采集部分（选取 + 本地化改编）只准备一次；改编失败是硬失败（不是修稿能修的）
     let prepared = null;
     const ensureCollected = async () => {
@@ -705,6 +730,7 @@ export async function runPipeline(options = {}, deps = {}) {
           originalShortCount,
           collectedCount,
           recentTitles,
+          topics,
           reasons: revision === 0 ? null : lastErrors,
           previousJson: lastRaw ? JSON.stringify(lastRaw, null, 2) : null,
         });
@@ -882,9 +908,24 @@ export async function runPipeline(options = {}, deps = {}) {
         reasons: reviewVerdict.pass ? null : reviewVerdict.reasons,
       });
       if (!reviewVerdict.pass) {
+        // 复用成品被重绑审稿拒绝：成品必须真正失效（下次运行重新生产，与进度
+        // 提示一致——回归修复：此前 package.json 未删，下一轮仍复用同一坏稿），
+        // 本次物料占用同步释放回候选池。
+        const file = saveRejectedPackage(date, run.data.runId, { content, materialIds: occupyIds }, reviewVerdict.reasons);
+        run.patch({ packagePath: file });
+        try {
+          invalidateValidatedPackage(date);
+        } catch (invErr) {
+          progress(`WARN 成品失效标记失败（需人工删除 package.json）：${invErr.message}`);
+        }
+        try {
+          await backend.releaseMaterialsSelection(occupyIds, date);
+        } catch (relErr) {
+          progress(`WARN 占用释放失败（需人工核对物料归属）：${relErr.message}`);
+        }
         run.fail(`复用成品的重新审稿未通过（hash=${hash.slice(0, 12)}…）：${reviewVerdict.reasons.join("；")}`);
         reviewVerdict.reasons.forEach((r) => progress(`REJECT(rebind-review) ${r}`));
-        progress("FAIL 复用内容审稿未通过，未发布（下次运行将重新生产）");
+        progress("FAIL 复用内容审稿未通过，未发布（成品已失效，下次运行将重新生产）");
         return finish("rejected", EXIT.REJECTED);
       }
     }

@@ -9,7 +9,7 @@ export const SITE = {
   description: "每天一期，短笑话与长篇佳作，轻量阅读。",
   /** 更详细的介绍（llms.txt、关于文案） */
   about:
-    "AI 原创的中文笑话日刊：每天一期，10 条短内容（短笑话、相声、讽刺对话）加 1 段脱口秀，早上 9 点后发布。",
+    "中文笑话日刊：每天一期，8 条网络采集改编（信源抓取 + 评审 + 本地化，标注原文出处）加 2 条原创短内容与 1 段原创脱口秀，早上 9 点后发布。",
   /** 对外站点地址（RSS/Sitemap/llms.txt 里的绝对链接） */
   url: "https://wekobear-joke-hub.netlify.app",
   locale: "zh-CN",

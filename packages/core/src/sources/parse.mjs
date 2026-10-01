@@ -6,14 +6,39 @@ export const MAX_FIELD_BYTES = 16 * 1024;
 /** 记录头形态：行首 数字串,十六进制串,（其后紧跟引号正文）。 */
 const HEAD_RE = /^[ \t]*(\d{2,}),([0-9a-f]{8,}),/i;
 
+/** pos 起始的行是否是完整记录头（数字 + 逗号 + 十六进制 + 逗号 + 引号）。 */
+function looksLikeRecordStart(src, pos) {
+  const m = HEAD_RE.exec(src.slice(pos, pos + 96));
+  return m !== null && src[pos + m[0].length] === '"';
+}
+
+/**
+ * 从 from 起跳过全部空行，返回首个非空行的起始位置；到结尾返回 -1。
+ * 用于闭引号判定：记录后面可能跟若干空行才是下一条记录。
+ */
+function nextNonBlankLine(src, from) {
+  let p = from;
+  while (p < src.length) {
+    const nl = src.indexOf("\n", p);
+    const lineEnd = nl < 0 ? src.length : nl;
+    if (src.slice(p, lineEnd).trim() !== "") return p;
+    if (nl < 0) return -1;
+    p = nl + 1;
+  }
+  return -1;
+}
+
 /**
  * 从 CSV 文本片段中提取全部"第三字段为双引号文本"的记录正文。
  * 目标格式（jokes.csv）：`<id>,<hash>,"<正文>","<标签>",<数字>,<数字>`
  *
  * 单遍状态机实现（不用全局正则回扫——评审 #8：连续空行有平方级耗时）：
- *   行首态：逐行检查记录头前缀（数字 + 逗号 + 十六进制 + 逗号），且下一字符是引号；
- *   字段态：扫描引号字段（"" 转义、可含换行），未闭合到片段末尾 = 残缺丢弃；
- *   引号内的伪记录头（正文里出现 换行+数字,hex,"）不会被误认——扫描器在字段态。
+ *   行首态：逐行检查记录头前缀；
+ *   字段态：扫描引号字段（"" 转义、可含换行）。
+ * 闭引号的判定（评审 #8b：引号内伪记录头）——一个引号只有在
+ * 「其后到行尾，且下一行是记录头或文件结束」时才算真闭引号；
+ * 否则视为正文字面引号继续扫描。这样正文中未转义的引号
+ * （后跟逗号/换行但下一行不是记录头）不会被误当成字段边界。
  * 片段首尾的残缺记录自然丢弃。
  */
 export function extractQuotedCsvTexts(text) {
@@ -24,12 +49,12 @@ export function extractQuotedCsvTexts(text) {
 
   while (i < n) {
     // 行首态：在本行开头找记录头前缀（只看行首有限窗口，避免回扫）
-    const m = HEAD_RE.exec(src.slice(i, i + 96));
-    if (!m || src[i + m[0].length] !== '"') {
+    if (!looksLikeRecordStart(src, i)) {
       const nl = src.indexOf("\n", i);
       i = nl < 0 ? n : nl + 1;
       continue;
     }
+    const m = HEAD_RE.exec(src.slice(i, i + 96));
 
     // 字段态：扫描完整引号字段（"" 转义、可含换行）
     let k = i + m[0].length + 1;
@@ -43,9 +68,23 @@ export function extractQuotedCsvTexts(text) {
           k += 2;
           continue;
         }
-        closed = true;
+        // 候选闭引号：其后跳过空行，首个非空行是记录头或已是结尾才算真闭引号，
+        // 否则按正文字面引号处理（正文可能含未转义引号 + 伪记录头）
+        const nl = src.indexOf("\n", k + 1);
+        if (nl < 0) {
+          closed = true;
+          k++;
+          break;
+        }
+        const nb = nextNonBlankLine(src, nl + 1);
+        if (nb < 0 || looksLikeRecordStart(src, nb)) {
+          closed = true;
+          k++;
+          break;
+        }
+        buf += '"';
         k++;
-        break;
+        continue;
       }
       buf += ch;
       k++;

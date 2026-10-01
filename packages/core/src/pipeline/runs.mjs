@@ -129,6 +129,14 @@ export function saveValidatedPackage(date, content, hash, meta) {
   return file;
 }
 
+/**
+ * 使某日期的本地成品失效（删除 package.json，下次运行不再复用、重新生产）。
+ * 用于复用成品重绑审稿被拒等场景——进度提示"下次运行将重新生产"必须字面成立。
+ */
+export function invalidateValidatedPackage(date) {
+  fs.rmSync(path.join(runDir(date), "package.json"), { force: true });
+}
+
 export function saveRejectedPackage(date, runId, raw, errors) {
   const file = path.join(runDir(date), `rejected-${runId}.json`);
   atomicWriteJson(file, {

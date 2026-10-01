@@ -13,12 +13,12 @@
 | 审稿分数门槛（originality/funniness/safety 下限）、查重参数 | `industry/selection.ts` |
 | 出口开关（RSS / llms.txt / sitemap+robots） | `industry/features.ts` |
 | 生产/修稿/审稿/采集评审/本地化改编提示词、幽默规则 | `industry/prompts/*.md` |
-| 采集信源（新增/停用一个信源） | `industry/sources.json`（格式见 docs/COLLECTION.md） |
+| 采集信源与热点话题源（新增/停用一个信源/话题源） | `industry/sources.json`（sources + topics，格式见 docs/COLLECTION.md） |
 
 注意的边界：
 
 - `shortCount` 可在 3–99 调整，且必须满足 `collectedShortCount + originalShortCount === shortCount`；`talkCount` 固定为 1；`FORMATS` 固定四种（公开 API 字段）。配置可实现性在 import 时自动校验。
-- 采集相关：测试不访问任何外部服务（读取器测试走 `file://` fixture 注入）；物料池有 curation 状态流转（candidate/selected/skipped），与 append-only 的 `joke_analyses` 不同。
+- 采集相关：测试不访问任何外部服务（读取器/话题测试走注入 fetcher 或 `file://` fixture）；物料池有 curation 状态流转（candidate/selected/skipped），与 append-only 的 `joke_analyses` 不同。当日热点话题是**尽力而为**增强：全部话题源失败不阻断发布（当期回到日常题材）；已发布幂等路径与成品复用路径不触发任何抓取。
 - **改门槛前先跑 `npm run selection-eval`**：用 `content/selection-samples.json` 的标注样本回放，看误放/误拒；同时用真实审稿输出去补充样本。不要凭感觉改数字。
 - 改提示词会自动换 `promptVersion`/`policyVersion`（内容哈希），新判断事件自动携带新版本——不需要手动维护版本号。
 

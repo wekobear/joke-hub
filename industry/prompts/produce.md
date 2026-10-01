@@ -2,6 +2,7 @@
 
 日期：{{date}}
 {{recentTitles}}
+{{topicsBlock}}
 
 本期构成（缺一不可）：
 - 原创短内容恰好 {{originalShortCount}} 条（本期另有 {{collectedCount}} 条来自外部信源的采集改编内容，由编辑部处理，你不要创作采集部分）

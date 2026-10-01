@@ -1,4 +1,4 @@
-// 信源读取器：三种 kind（json_api / json_list / csv_quote）。
+// 信源读取器：四种 kind（json_api / json_list / csv_quote / bilibili_comments）。
 // 输出统一为 { items: [{ title, body, url }] }；抓取/解析失败抛错，
 // 由 collect.mjs 按源隔离（一个信源挂了不影响其他信源）。
 import fs from "node:fs";
@@ -79,6 +79,33 @@ export async function readSource(source, { fetcher = fetchText } = {}) {
     const text = await fetcher(cfg.url, { timeoutMs: 20_000, retries: 2, range: { start, end: start + window - 1 } });
     const texts = extractQuotedCsvTexts(text);
     return { items: sample(texts, maxTake).map((body) => ({ title: null, body, url })) };
+  }
+
+  if (source.kind === "bilibili_comments") {
+    // 实时中文源（评审：时效性需求）：热门视频 → 高赞神评两跳抓取。
+    // sort=1 按热度排序；只取 like ≥ minLikes 的评论；条目 url 指向视频页（可溯源）。
+    const pop = JSON.parse(await fetcher(cfg.popularUrl, { timeoutMs: 15_000, retries: 2 }));
+    const videos = (getPath(pop, "data.list") ?? [])
+      .filter((v) => v && Number.isInteger(v.aid))
+      .slice(0, cfg.videos ?? 4);
+    const minLikes = cfg.minLikes ?? 800;
+    const items = [];
+    for (const v of videos) {
+      if (items.length >= maxTake) break;
+      const rep = JSON.parse(await fetcher(`${cfg.replyUrl}${v.aid}`, { timeoutMs: 15_000, retries: 2 }));
+      for (const r of getPath(rep, "data.replies") ?? []) {
+        if (items.length >= maxTake) break;
+        const body = r?.content?.message;
+        if (typeof body === "string" && body.trim() && (r.like ?? 0) >= minLikes) {
+          items.push({
+            title: typeof v.title === "string" && v.title.trim() ? v.title.slice(0, 40) : null,
+            body,
+            url: `https://www.bilibili.com/video/av${v.aid}`,
+          });
+        }
+      }
+    }
+    return { items };
   }
 
   throw new Error(`未知信源 kind：${source.kind}`);

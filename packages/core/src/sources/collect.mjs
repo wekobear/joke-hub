@@ -12,13 +12,18 @@ import { judgePending } from "./judge.mjs";
 
 const require = createRequire(import.meta.url);
 
-/** 加载 industry/sources.json（信源注册表）。 */
-export function loadSources() {
+/** 加载 industry/sources.json 完整注册表（sources + topics）。 */
+export function loadRegistry() {
   const pkgPath = require.resolve("@joke-hub/industry/package.json");
   const file = pathToFileURL(path.join(path.dirname(pkgPath), "sources.json")).href;
   const parsed = JSON.parse(fs.readFileSync(new URL(file), "utf8"));
   if (!Array.isArray(parsed.sources)) throw new Error("sources.json: sources 必须是数组");
-  return parsed.sources;
+  return parsed;
+}
+
+/** 加载信源数组（collectAll 与物料选取用）。 */
+export function loadSources() {
+  return loadRegistry().sources;
 }
 
 /**

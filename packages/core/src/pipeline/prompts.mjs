@@ -119,8 +119,9 @@ export function promptVersion(name) {
 }
 
 /**
- * 规则版本：提示词版本 × 门槛 × 词表 × 配比 × 长度边界。
+ * 规则版本：提示词版本 × 门槛 × 词表 × 配比 × 长度边界 × 信源注册表。
  * 回答"同一份分数为什么这次通过、下次拒绝"——因为规则版本变了。
+ * 信源注册表（sources.json）也计入：换信源 = 换采集规则（评审意见）。
  */
 export function policyVersion() {
   return sha10(JSON.stringify(canonicalJson({
@@ -131,11 +132,23 @@ export function policyVersion() {
       judgeCollected: promptVersion("judge-collected"),
       adaptCollected: promptVersion("adapt-collected"),
     },
+    sources: sourcesRegistryHash(),
     selection: SELECTION,
     requirement: DAILY_REQUIREMENT,
     categories: DAILY_CATEGORIES,
     limits: LIMITS,
   })));
+}
+
+/** 信源注册表内容哈希（sources.json 原文；缺文件按 "none" 计）。 */
+function sourcesRegistryHash() {
+  try {
+    const pkg = require.resolve("@joke-hub/industry/package.json");
+    const file = path.join(path.dirname(pkg), "sources.json");
+    return sha10(fs.readFileSync(file, "utf8"));
+  } catch {
+    return "none";
+  }
 }
 
 // ---------- 提示词构建器（v0.5.0：8 采集改编 + 2 原创 + 1 脱口秀） ----------
@@ -144,6 +157,13 @@ function recentTitlesBlock(recentTitles) {
   return recentTitles.length
     ? `近期已发布过的标题（题材和笑点必须避开，不得换皮重写）：\n${recentTitles.map((t) => `- ${t}`).join("\n")}`
     : "暂无近期历史。";
+}
+
+/** 当日热点话题块（时效性题材，尽力而为；空列表 = 未获取到，不强制使用）。 */
+function topicsBlock(topics) {
+  return (Array.isArray(topics) && topics.length)
+    ? `当日热点话题（时效性题材：可从中选取至多 2 条作为本期原创短内容的灵感，须按公开事实写、不点名真实人物、不涉政治敏感，把话题里的荒诞处放大成笑点；不强制使用，不适合就不选）：\n${topics.slice(0, 12).map((t) => `- ${t}`).join("\n")}`
+    : "（本次未获取到热点话题：按日常题材创作即可）";
 }
 
 function baseValues(date, originalShortCount, collectedCount) {
@@ -163,18 +183,19 @@ function baseValues(date, originalShortCount, collectedCount) {
 }
 
 /** 生产 prompt：只创作原创部分（N 条短内容 + 1 条脱口秀），采集部分由编辑部处理。 */
-export function buildProducePrompt({ date, originalShortCount, collectedCount, recentTitles }) {
+export function buildProducePrompt({ date, originalShortCount, collectedCount, recentTitles, topics }) {
   return promptText("produce", {
     ...baseValues(date, originalShortCount, collectedCount),
     recentTitles: recentTitlesBlock(recentTitles),
+    topicsBlock: topicsBlock(topics),
   });
 }
 
 /** 修稿 prompt：带上一次被拒的具体原因重写原创部分，仅允许一次。 */
-export function buildRevisePrompt({ date, originalShortCount, collectedCount, recentTitles, previousJson, reasons }) {
+export function buildRevisePrompt({ date, originalShortCount, collectedCount, recentTitles, previousJson, reasons, topics }) {
   return promptText("revise", {
     ...baseValues(date, originalShortCount, collectedCount),
-    recentTitles: recentTitlesBlock(recentTitles),
+    topicsBlock: topicsBlock(topics),
     previousJson: String(previousJson).slice(0, 6000),
     reasons: reasons.map((r, i) => `${i + 1}. ${r}`).join("\n"),
   });

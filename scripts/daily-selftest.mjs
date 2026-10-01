@@ -17,6 +17,7 @@ import {
   selectCollectedMaterials, parseAdaptOutput, buildDailyPackage,
   parseJudgeOutput, collectAll, readSource, fingerprint,
   extractQuotedCsvTexts, sanitizeBody, prefilter,
+  extractJson, fetchTopics, topicSources,
 } from "@joke-hub/core/pipeline";
 import { checkPublishGate, shanghaiNow, contentHashStable } from "@joke-hub/core/pipeline";
 
@@ -367,6 +368,7 @@ const PROMPT_BASE_VALUES = {
   originalShortCount: "2", collectedCount: "8", collectedShortCount: "8",
   categories: "生活、职场",
   recentTitles: "暂无近期历史。",
+  topicsBlock: "（本次未获取到热点话题：按日常题材创作即可）",
   previousJson: "{}", reasons: "1. 测试", packageJson: "{}",
   candidates: "#0｜zh\n测试正文",
 };
@@ -418,6 +420,10 @@ const PROMPT_BASE_VALUES = {
   const built = buildProducePrompt({ date: DATE, originalShortCount: 2, collectedCount: 8, recentTitles: [] });
   ok("buildProducePrompt 含日期、配比与分类白名单",
     built.includes(DATE) && built.includes("生活") && built.includes("8") && built.includes("2"));
+  ok("buildProducePrompt 含热点话题（时效性题材）",
+    buildProducePrompt({ date: DATE, originalShortCount: 2, collectedCount: 8, recentTitles: [], topics: ["国庆返程高峰"] }).includes("国庆返程高峰"));
+  ok("buildProducePrompt 无话题时给降级说明",
+    buildProducePrompt({ date: DATE, originalShortCount: 2, collectedCount: 8, recentTitles: [], topics: [] }).includes("未获取到热点话题"));
   ok("buildReviewPrompt 含候选包与实际配比",
     buildReviewPrompt({ date: DATE, packageJson: "{\"k\":1}", recentTitles: [], collectedShortCount: 8, originalShortCount: 2 })
       .includes("\"k\""));
@@ -498,6 +504,7 @@ const goodAdapt = async ({ candidates }) =>
 const mkDeps = (extra = {}) => ({
   produce: goodProduce, review: passReview, progress: silentProgress,
   selectCollected: goodSelect, adapt: goodAdapt,
+  topics: async () => [], // 话题注入：不访问网络（真实 fetchTopics 另有单测）
   ...extra,
 });
 
@@ -1017,6 +1024,67 @@ ${cleanCsv}`;
   fs.rmSync(tmp, { recursive: true, force: true });
 }
 
+// ---------- 7b. bilibili_comments 读取器（注入 fetcher，不访问网络） ----------
+
+{
+  const fetcher = async (url) => {
+    const u = String(url);
+    if (u.includes("/popular")) {
+      return JSON.stringify({ code: 0, data: { list: [{ aid: 111, title: "视频甲标题" }, { aid: 222, title: "视频乙标题" }] } });
+    }
+    if (u.includes("/reply") && u.endsWith("oid=111")) {
+      return JSON.stringify({ code: 0, data: { replies: [
+        { like: 900, content: { message: "高赞神评甲".padEnd(30, "好") } },
+        { like: 10, content: { message: "低赞评论应被忽略".padEnd(30, "水") } },
+      ] } });
+    }
+    if (u.endsWith("oid=222")) {
+      return JSON.stringify({ code: 0, data: { replies: [
+        { like: 1200, content: { message: "高赞神评乙".padEnd(30, "哈") } },
+      ] } });
+    }
+    throw new Error(`未预期的抓取地址：${u}`);
+  };
+  const src = {
+    id: "t-bili", kind: "bilibili_comments", lang: "zh",
+    config: {
+      popularUrl: "https://x.example/popular", replyUrl: "https://x.example/reply?oid=",
+      videos: 2, minLikes: 800, maxTake: 5,
+    },
+  };
+  const r = await readSource(src, { fetcher });
+  ok("bilibili_comments：只取高赞神评并带视频页链接",
+    r.items.length === 2
+      && r.items[0].body.startsWith("高赞神评甲") && !r.items.some((x) => x.body.startsWith("低赞"))
+      && r.items[0].url === "https://www.bilibili.com/video/av111"
+      && r.items[1].url === "https://www.bilibili.com/video/av222",
+    JSON.stringify(r.items.map((x) => [x.body.slice(0, 6), x.url])));
+  // maxTake 限额生效
+  const capped = await readSource({ ...src, config: { ...src.config, maxTake: 1 } }, { fetcher });
+  ok("bilibili_comments：maxTake 限额生效", capped.items.length === 1, `n=${capped.items.length}`);
+}
+
+// ---------- 7c. 当日热点话题（注入 fetcher，不访问网络） ----------
+
+{
+  const baidu = { id: "t-baidu", config: { url: "https://t.example/baidu", listPath: "data.cards.0.content", textField: "word" } };
+  const toutiao = { id: "t-toutiao", config: { url: "https://t.example/toutiao", listPath: "data", textField: "Title" } };
+  const fetcher = async (url) => url.includes("baidu")
+    ? JSON.stringify({ data: { cards: [{ content: [{ word: "热搜甲" }, { word: "热搜乙" }, { word: "" }, { word: " 热搜甲 " }] }] } })
+    : JSON.stringify({ data: [{ Title: "热搜甲" }, { Title: "热搜丙" }] });
+  const r = await fetchTopics({ fetcher, sources: [baidu, toutiao] });
+  ok("话题源跨源去重合并（含空白词清洗）",
+    r.topics.length === 3 && r.topics[0] === "热搜甲" && r.topics.includes("热搜丙"),
+    JSON.stringify(r.topics));
+  ok("话题源 stats 正常", r.stats.length === 2 && r.stats.every((s) => s.ok));
+  const down = await fetchTopics({ fetcher: async () => { throw new Error("连接失败"); }, sources: [baidu] });
+  ok("话题源失败隔离（不抛错、返回空）", down.topics.length === 0 && down.stats[0].ok === false);
+  const reg = topicSources();
+  ok("注册表话题源已配置（百度+头条）",
+    reg.length >= 2 && reg.some((t) => t.id === "baidu-hot") && reg.some((t) => t.id === "toutiao-hot"),
+    JSON.stringify(reg.map((t) => t.id)));
+}
+
 // ---------- 8. collectAll 离线编排（注入 fetcher + judge，不访问网络） ----------
 
 {
@@ -1029,6 +1097,17 @@ ${cleanCsv}`;
   // 每个真实信源一个 fixture（按 sources.json 的 kind 出对应内容）
   const fetcher = async (url) => {
     const u = String(url);
+    if (u.includes("web-interface/popular")) {
+      return JSON.stringify({ code: 0, data: { list: [{ aid: 42, title: "热门视频标题甲" }, { aid: 43, title: "热门视频标题乙" }] } });
+    }
+    if (u.includes("/reply")) {
+      return u.endsWith("oid=42")
+        ? JSON.stringify({ code: 0, data: { replies: [
+            { like: 900, content: { message: "B站神评第一条：足够长的全中文评论，可以通过预过滤。" } },
+            { like: 5, content: { message: "低赞评论应当被忽略掉" } },
+          ] } })
+        : JSON.stringify({ code: 0, data: { replies: [] } });
+    }
     if (u.includes("official-joke-api")) {
       return JSON.stringify([
         { setup: "Why did the scarecrow win", punchline: "Because it was outstanding in its field" },
@@ -1063,7 +1142,8 @@ ${cleanCsv}`;
     materialsStats: () => require2("@joke-hub/core/store").materialsStats(d),
   };
   const result = await collectAll(backend, { fetcher, judge });
-  ok("collectAll：四个信源全部成功", result.perSource.length === 4 && result.perSource.every((x) => x.ok),
+  ok("collectAll：五个信源全部成功（含 B站神评实时源）",
+    result.perSource.length === 5 && result.perSource.every((x) => x.ok),
     JSON.stringify(result.perSource.map((x) => `${x.id}:${x.ok}`)));
   ok("collectAll：入库 + 评审通过", result.ingest.inserted >= 4 && result.judged.passed >= 4, JSON.stringify({ i: result.ingest, j: result.judged }));
   ok("collectAll：物料池可入选数就绪", result.stats.eligible >= 4, JSON.stringify(result.stats));
@@ -1187,6 +1267,14 @@ ${cleanCsv}`;
 {
   const single = JSON.stringify([{ i: 0, fit: true, funniness: 8, safety: 9, category: "生活" }]);
   ok("extractJson 单元素数组保持数组", Array.isArray(extractJson(single, { label: "t" })));
+  // 字符串值内未转义英文双引号的修复回退（实测：对话体正文用 "…" 包对话破坏 JSON）
+  const badQuotes = '{"issueTitle":"标题甲","originalShorts":[{"title":"座位","body":"我问站务员："这趟车对号入座吗？"\\n"班次跟地铁一样。","category":"旅行"}]}';
+  const fixed = extractJson(badQuotes, { label: "t" });
+  ok("extractJson 修复字符串内未转义双引号",
+    fixed.issueTitle === "标题甲" && fixed.originalShorts[0].body.includes("对号入座"),
+    JSON.stringify(fixed).slice(0, 120));
+  ok("extractJson 正常转义不受修复影响",
+    extractJson('{"a":"已转义\\"引号","b":1}', { label: "t" }).b === 1);
   const noisy = `结果如下\n${single}\n以上。`;
   ok("extractJson 带说明文字的单元素数组保持数组", Array.isArray(extractJson(noisy, { label: "t" })));
   ok("extractJson 带说明文字的对象", extractJson('说明 {"a":1} 结尾', { label: "t" }).a === 1);
@@ -1219,7 +1307,10 @@ ${cleanCsv}`;
   const { openDb, insertMaterials, applyJudgements } = require2("@joke-hub/core/store");
   const d0 = openDb(DB, null);
   d0.exec("DELETE FROM materials WHERE id LIKE 'd12-%'");
-  const bodies = ["复用占用回归物料甲".repeat(5), "复用占用回归物料乙".repeat(5)];
+  const bodies = [
+    "楼下便利店老板问我为什么每天都来买关东煮，我说图个人气，他说那你干脆搬进来住，还能省个房租钱。",
+    "同事说他戒烟成功了，我问他怎么做到的，他说每次想抽就吃一颗糖，现在糖瘾比烟瘾还大，但是糖便宜，他心理平衡了。",
+  ];
   insertMaterials(d0, bodies.map((b, i) => ({
     id: `d12-m${i}`, sourceId: "hf-chinese-joke", lang: "zh", title: null, body: b,
     url: `https://e.com/d12/${i}`, fingerprint: fingerprint(b),
@@ -1232,6 +1323,7 @@ ${cleanCsv}`;
   fs.rmSync(`${RUNS}/${D12}`, { recursive: true, force: true });
   const deps12 = {
     produce: goodProduce, review: passReview, progress: silentProgress,
+    topics: async () => [],
     selectCollected: async ({ need }) => {
       const d = openDb(DB, null);
       const { listEligibleMaterials } = require2("@joke-hub/core/store");
@@ -1267,6 +1359,92 @@ ${cleanCsv}`;
   fs.rmSync(`${RUNS}/${D12}`, { recursive: true, force: true });
 }
 
+// #2b 复用成品重绑审稿被拒 → 成品必须真正失效 + 物料释放（回归：进度提示
+//     承诺"下次运行将重新生产"，但 package.json 此前未删除，下一轮仍复用坏稿，
+//     且物料占用悬空——本用例锁定修复后的行为）
+{
+  const D14 = daysAgoDate(420);
+  fs.rmSync(`${RUNS}/${D14}`, { recursive: true, force: true });
+  const { openDb, insertMaterials, applyJudgements } = require2("@joke-hub/core/store");
+  const d0 = openDb(DB, null);
+  d0.exec("DELETE FROM materials WHERE id LIKE 'd14-%'");
+  const bodies = [
+    "重绑回归物料甲：宠物店老板说这只猫不抓沙发，我问那它抓什么，他说抓心，抓你的心。",
+    "重绑回归物料乙：同事说他理财赚了百分之十，我问本金多少，他说别问，问就是百分之十。",
+  ];
+  insertMaterials(d0, bodies.map((b, i) => ({
+    id: `d14-m${i}`, sourceId: "hf-chinese-joke", lang: "zh", title: null, body: b,
+    url: `https://e.com/d14/${i}`, fingerprint: fingerprint(b),
+  })));
+  applyJudgements(d0, bodies.map((_, i) => ({
+    id: `d14-m${i}`, fit: true, funniness: 8, safety: 9, category: "生活", reason: null,
+  })), { funniness: 7, safety: 9 });
+  d0.close();
+
+  let produceCalls = 0;
+  let reviewCalls = 0;
+  const seenTopics = [];
+  const deps14 = {
+    produce: async ({ date, originalShortCount, topics }) => {
+      produceCalls++;
+      seenTopics.push(topics);
+      return makeProduceOutput(date, originalShortCount);
+    },
+    // 审稿序列：① prepare 生产审稿通过；② 复用重绑审稿拒绝；③ 重新生产审稿通过
+    review: async () => {
+      reviewCalls++;
+      return reviewCalls === 2
+        ? { pass: false, reasons: ["重绑审稿拒绝回归用例"], scores: { originality: 4, funniness: 4, safety: 9 } }
+        : { pass: true, reasons: [], scores: { originality: 9, funniness: 9, safety: 9 } };
+    },
+    progress: silentProgress,
+    topics: async () => ["回归用例话题"],
+    selectCollected: async ({ need }) => {
+      const d = openDb(DB, null);
+      const { listEligibleMaterials } = require2("@joke-hub/core/store");
+      const list = listEligibleMaterials(d, { funniness: 7, safety: 9 })
+        .filter((m) => m.id.startsWith("d14-"))
+        .map((m) => ({ ...m, sourceName: "测试信源" }));
+      d.close();
+      return list.slice(0, need);
+    },
+    adapt: async ({ candidates }) => candidates.map((m, i) => ({
+      title: `重绑采集${i + 1}号`, body: m.body, category: "生活",
+    })),
+  };
+
+  // ① prepare：成品就绪（生产审稿通过）
+  const p1 = await runPipeline({ date: D14, mode: "prepare", skipHttp: true }, deps14);
+  ok("重绑回归：prepare 成品就绪", p1.exitCode === EXIT.OK && p1.status === "prepared", `got ${p1.exitCode}/${p1.status}`);
+  ok("话题注入到达生产端", seenTopics[0] && seenTopics[0][0] === "回归用例话题", JSON.stringify(seenTopics[0]));
+
+  // ② run：复用成品 → 重绑审稿拒绝 → rejected，成品失效 + 物料释放
+  const p2 = await runPipeline({ date: D14, notBefore: "00:00", skipHttp: true }, deps14);
+  ok("重绑回归：复用审稿拒绝 → rejected", p2.exitCode === EXIT.REJECTED && p2.status === "rejected", `got ${p2.exitCode}/${p2.status}`);
+  ok("重绑回归：失败材料已保存", fs.readdirSync(`${RUNS}/${D14}`).some((f) => f.startsWith("rejected-")));
+  ok("重绑回归：成品已失效（package.json 删除）", !fs.existsSync(`${RUNS}/${D14}/package.json`));
+  {
+    const d = openDb(DB, null);
+    const rows = d.prepare("SELECT used_issue, status FROM materials WHERE id LIKE 'd14-%'").all();
+    d.close();
+    ok("重绑回归：物料占用已释放回候选池",
+      rows.length === 2 && rows.every((r) => r.used_issue === null && r.status === "candidate"),
+      JSON.stringify(rows));
+  }
+
+  // ③ 再 run：不复用坏稿，重新生产并发布（审稿第三次调用通过）
+  const p3 = await runPipeline({ date: D14, notBefore: "00:00", skipHttp: true }, deps14);
+  ok("重绑回归：失效后重新生产发布", p3.status === "published-unverified" && produceCalls === 2,
+    `status=${p3.status} produceCalls=${produceCalls}`);
+  {
+    const d = openDb(DB, null);
+    const used = d.prepare("SELECT COUNT(*) c FROM materials WHERE id LIKE 'd14-%' AND used_issue = ?").get(D14).c;
+    d.close();
+    ok("重绑回归：重新发布重新占用物料", used === 2, `used=${used}`);
+  }
+  fs.rmSync(`${RUNS}/${D14}`, { recursive: true, force: true });
+}
+
 // #6 修稿轮重新选取物料（排除上一轮的 id）
 {
   const D13 = daysAgoDate(390);
@@ -1276,6 +1454,7 @@ ${cleanCsv}`;
   const r = await runPipeline({
     date: D13, notBefore: "00:00", skipHttp: true,
   }, {
+    topics: async () => [],
     produce: async ({ date, originalShortCount }) => {
       produceAttempts++;
       if (produceAttempts === 1) {

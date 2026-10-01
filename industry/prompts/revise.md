@@ -7,6 +7,7 @@
 {{reasons}}
 
 日期：{{date}}
+{{topicsBlock}}
 
 本期构成（缺一不可）：
 - 原创短内容恰好 {{originalShortCount}} 条

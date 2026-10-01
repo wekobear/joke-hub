@@ -1,6 +1,21 @@
 {
-  "$comment": "信源注册表（v0.5.0）。格式与接入方法见 docs/COLLECTION.md。kind 三种：json_api（每次调用返回列表的实时接口）/ json_list（静态 JSON 数组文件，整份下载后本地缓存采样）/ csv_quote（CSV 引号字段采样，按字节区间随机取样）。全部信源免注册免 key；lang=en 的信源内容在成刊时由模型本地化改编为中文并保留来源归属。enabled=false 可临时停用。",
+  "$comment": "信源注册表（v0.5.0）。格式与接入方法见 docs/COLLECTION.md。sources 的 kind 五种：json_api（每次调用返回列表的实时接口）/ json_list（静态 JSON 数组文件，整份下载后本地缓存采样）/ csv_quote（CSV 引号字段采样，按字节区间随机取样）/ bilibili_comments（B站热门视频高赞神评，两跳抓取，实时中文源）。topics 为当日热点话题源（json 形状），供原创部分的时效性题材参考，尽力而为、失败不阻断发布。全部信源免注册免 key；lang=en 的信源内容在成刊时由模型本地化改编为中文并保留来源归属。enabled=false 可临时停用。域名注意：JokeAPI 官方域是 v2.jokeapi.dev（v2.jokeapi.net 不可达）。",
   "sources": [
+    {
+      "id": "bilibili-hot-comments",
+      "name": "B站热门神评",
+      "kind": "bilibili_comments",
+      "lang": "zh",
+      "enabled": true,
+      "config": {
+        "popularUrl": "https://api.bilibili.com/x/web-interface/popular?ps=20",
+        "replyUrl": "https://api.bilibili.com/x/v2/reply?type=1&ps=20&sort=1&oid=",
+        "videos": 4,
+        "minLikes": 800,
+        "maxTake": 6,
+        "link": "https://www.bilibili.com"
+      }
+    },
     {
       "id": "hf-chinese-joke",
       "name": "HF 中文笑话语料",
@@ -30,15 +45,15 @@
       }
     },
     {
-      "id": "jokeapi-net",
+      "id": "jokeapi-dev",
       "name": "JokeAPI v2",
       "kind": "json_api",
       "lang": "en",
       "enabled": true,
       "config": {
-        "url": "https://v2.jokeapi.net/joke/Miscellaneous,Pun?blacklistFlags=nsfw,racist,sexist,explicit&amount=10",
+        "url": "https://v2.jokeapi.dev/joke/Miscellaneous,Pun?blacklistFlags=nsfw,racist,sexist,explicit&amount=10",
         "listPath": "jokes",
-        "link": "https://v2.jokeapi.net",
+        "link": "https://v2.jokeapi.dev",
         "combine": ["setup", "delivery"],
         "titleFrom": "setup",
         "maxTake": 3
@@ -57,6 +72,28 @@
         "itemBody": "body",
         "cacheDays": 7,
         "maxTake": 3
+      }
+    }
+  ],
+  "topics": [
+    {
+      "id": "baidu-hot",
+      "name": "百度热搜",
+      "enabled": true,
+      "config": {
+        "url": "https://top.baidu.com/api/board?platform=pc&tab=realtime",
+        "listPath": "data.cards.0.content",
+        "textField": "word"
+      }
+    },
+    {
+      "id": "toutiao-hot",
+      "name": "今日头条热榜",
+      "enabled": true,
+      "config": {
+        "url": "https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc",
+        "listPath": "data",
+        "textField": "Title"
       }
     }
   ]

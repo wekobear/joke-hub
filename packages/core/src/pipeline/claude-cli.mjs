@@ -122,6 +122,44 @@ export function runClaudeText(prompt, { timeoutMs = 600_000, label = "claude" } 
 }
 
 /**
+ * 修复「字符串值内未转义的英文双引号」（实测：GLM 经 claude CLI 输出对话体正文时
+ * 会用 "…" 包对话，破坏 JSON 结构）。判别规则：字符串内的 `"` 只有当其后（跳过
+ * 空白）是 , : } ] 或结尾时才算真闭引号，否则视为字面引号并转义。
+ * 已正确转义的 \" 与其它转义对原样保留。修复结果仍须通过 JSON.parse 才被接受。
+ */
+function repairUnescapedQuotes(s) {
+  let out = "";
+  let inStr = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (!inStr) {
+      if (ch === '"') inStr = true;
+      out += ch;
+      continue;
+    }
+    if (ch === "\\") {
+      out += ch + (s[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < s.length && /\s/.test(s[j])) j++;
+      const nx = s[j];
+      if (nx === undefined || nx === "," || nx === "}" || nx === "]" || nx === ":") {
+        inStr = false;
+        out += ch;
+      } else {
+        out += '\\"';
+      }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+/**
  * 从模型正文提取 JSON 对象：容忍 ```json 围栏与前后说明文字。
  * 提取失败抛 ClaudeCliError（fail-closed：绝不把解析失败当通过）。
  */
@@ -139,26 +177,35 @@ export function extractJson(text, { label = "claude" } = {}) {
   //    （评审/改编输出数组、其余输出对象；切错时再试另一种）
   const arrStart = t.indexOf("[");
   const objStart = t.indexOf("{");
-  const tries = [];
+  const candidates = [t];
   if (arrStart >= 0 && (objStart < 0 || arrStart < objStart)) {
     const e = t.lastIndexOf("]");
-    if (e > arrStart) tries.push(t.slice(arrStart, e + 1));
+    if (e > arrStart) candidates.push(t.slice(arrStart, e + 1));
     if (objStart >= 0) {
       const oe = t.lastIndexOf("}");
-      if (oe > objStart) tries.push(t.slice(objStart, oe + 1));
+      if (oe > objStart) candidates.push(t.slice(objStart, oe + 1));
     }
   } else if (objStart >= 0) {
     const oe = t.lastIndexOf("}");
-    if (oe > objStart) tries.push(t.slice(objStart, oe + 1));
+    if (oe > objStart) candidates.push(t.slice(objStart, oe + 1));
     if (arrStart >= 0) {
       const ae = t.lastIndexOf("]");
-      if (ae > arrStart) tries.push(t.slice(arrStart, ae + 1));
+      if (ae > arrStart) candidates.push(t.slice(arrStart, ae + 1));
     }
   }
-  for (const c of tries) {
+  for (const c of candidates) {
     try {
       return JSON.parse(c);
     } catch {}
+  }
+  // 3) 字符串值内未转义引号的修复回退（修复结果必须整体可解析才接受）
+  for (const c of candidates) {
+    const repaired = repairUnescapedQuotes(c);
+    if (repaired !== c) {
+      try {
+        return JSON.parse(repaired);
+      } catch {}
+    }
   }
   throw new ClaudeCliError(`${label} 输出中找不到合法 JSON：${text.slice(0, 300)}`, { stage: label });
 }

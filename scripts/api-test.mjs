@@ -8,6 +8,13 @@ import { openDb } from "@joke-hub/core/store";
 process.env.JOKES_DB_PATH = "data/selftest-api.sqlite";
 const TEST_DB = process.env.JOKES_DB_PATH;
 for (const f of [TEST_DB, `${TEST_DB}-wal`, `${TEST_DB}-shm`]) fs.rmSync(f, { force: true });
+// 环境隔离（开源合同：测试不访问任何外部服务）：把 Supabase 变量显式置空，
+// 不能只 delete——next start 运行时仍会自动加载项目根 .env 文件读到云端配置；
+// 而进程环境变量优先于 .env 文件，置空字符串即可强制本地 SQLite 测试库
+// （supabaseReadConfig 对空串按未配置处理 → 本地模式）。
+for (const k of [
+  "SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_PUBLISHABLE_KEY", "SUPABASE_SERVICE_KEY",
+]) process.env[k] = "";
 
 // CLI 同路径导入（等价于 content:import 后的状态）
 openDb(TEST_DB, null);

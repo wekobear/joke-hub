@@ -7,10 +7,11 @@ export {
   selectCollectedMaterials, parseAdaptOutput, buildDailyPackage,
 } from "./pipeline.mjs";
 export { parseJudgeOutput, collectedVerdict } from "../sources/judge.mjs";
-export { collectAll, loadSources } from "../sources/collect.mjs";
+export { collectAll, loadSources, loadRegistry } from "../sources/collect.mjs";
 export { readSource, fingerprint } from "../sources/readers.mjs";
 export { sanitizeBody, prefilter, chineseRatio } from "../sources/sanitize.mjs";
 export { extractQuotedCsvTexts } from "../sources/parse.mjs";
+export { fetchTopics, topicSources } from "../sources/topics.mjs";
 export { validateDailyPackage, assertTargetDate, dupeMaterial } from "./validate.mjs";
 export {
   PUBLISH_NOT_BEFORE, DAILY_REQUIREMENT, DAILY_SOURCE, DAILY_CATEGORIES, LIMITS, SELECTION,
@@ -22,6 +23,7 @@ export {
   runDir, newRunId, atomicWriteJson,
   RunRecord, acquireLock, releaseLock,
   loadLatestRun, loadValidatedPackage, saveValidatedPackage, saveRejectedPackage,
+  invalidateValidatedPackage,
 } from "./runs.mjs";
 export { runClaudeText, extractJson, ClaudeCliError } from "./claude-cli.mjs";
 export {
