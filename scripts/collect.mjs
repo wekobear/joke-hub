@@ -15,17 +15,30 @@ const noJudge = args.includes("--no-judge");
 
 let backend;
 if (supabaseReadConfig()) {
+  // 策展后端与流水线同规则：默认 local（物料池在调度机本地库），cloud 需先执行迁移
+  const curation = process.env.JOKE_CURATION_BACKEND || "local";
+  let cur = null;
+  if (curation === "local") {
+    const store = await import("@joke-hub/core/store");
+    const db = store.openDb(store.defaultDbPath(), null);
+    cur = {
+      insertMaterials: (rows) => store.insertMaterials(db, rows),
+      listPendingJudgement: (l) => store.listPendingJudgement(db, l),
+      applyJudgements: (r, m) => store.applyJudgements(db, r, m),
+      listEligibleMaterials: (m) => store.listEligibleMaterials(db, m),
+      markMaterialsSelected: (ids, d) => store.markMaterialsSelected(db, ids, d),
+    };
+  }
   backend = {
-    kind: "supabase",
-    insertMaterials: (rows) => sb.insertMaterials(rows),
-    listPendingJudgement: (limit) => sb.listPendingJudgement(limit),
-    applyJudgements: (r, m) => sb.applyJudgements(r, m),
-    listEligibleMaterials: (m) => sb.listEligibleMaterials(m),
-    markMaterialsSelected: (ids, d) => sb.markMaterialsSelected(ids, d),
+    kind: `supabase（策展：${curation}）`,
+    insertMaterials: (rows) => (cur ?? sb).insertMaterials(rows),
+    listPendingJudgement: (limit) => (cur ?? sb).listPendingJudgement(limit),
+    applyJudgements: (r, m) => (cur ?? sb).applyJudgements(r, m),
+    listEligibleMaterials: (m) => (cur ?? sb).listEligibleMaterials(m),
+    markMaterialsSelected: (ids, d) => (cur ?? sb).markMaterialsSelected(ids, d),
     materialsStats: async () => {
-      const eligible = await sb.listEligibleMaterials(
-        (await import("@joke-hub/core/pipeline")).SELECTION.collected.minScores,
-      );
+      const { SELECTION } = await import("@joke-hub/core/pipeline");
+      const eligible = await (cur ?? sb).listEligibleMaterials(SELECTION.collected.minScores);
       return { eligible: eligible.length };
     },
   };

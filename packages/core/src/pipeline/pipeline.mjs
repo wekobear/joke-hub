@@ -246,9 +246,49 @@ async function openBackend() {
   }
   const sb = await import("../supabase-store.mjs");
   const reader = publicationReader({ getDb: () => null });
+  // 策展后端（v0.5.1）：物料池与判断账本存放位置。
+  //   local（默认）= 调度机本地 SQLite——开箱即用，云端只需已发布的公开内容；
+  //   cloud = 需先在 Supabase 执行 joke_analyses/joke_materials 两个迁移（见 docs/COLLECTION.md）。
+  const curation = process.env.JOKE_CURATION_BACKEND || "local";
+  let cur = null;
+  if (curation === "local") {
+    const { openDb, defaultDbPath } = await import("../store.mjs");
+    const db = openDb(defaultDbPath(), null);
+    cur = {
+      async saveAnalysis(rec) {
+        const { saveAnalysis } = await import("../store.mjs");
+        return saveAnalysis(db, rec);
+      },
+      async insertMaterials(rows) {
+        const { insertMaterials } = await import("../store.mjs");
+        return insertMaterials(db, rows);
+      },
+      async listPendingJudgement(limit) {
+        const { listPendingJudgement } = await import("../store.mjs");
+        return listPendingJudgement(db, limit);
+      },
+      async applyJudgements(r, m) {
+        const { applyJudgements } = await import("../store.mjs");
+        return applyJudgements(db, r, m);
+      },
+      async listEligibleMaterials(m) {
+        const { listEligibleMaterials } = await import("../store.mjs");
+        return listEligibleMaterials(db, m);
+      },
+      async markMaterialsSelected(ids, d) {
+        const { markMaterialsSelected } = await import("../store.mjs");
+        return markMaterialsSelected(db, ids, d);
+      },
+      async releaseMaterialsSelection(ids, d) {
+        const { releaseMaterialsSelection } = await import("../store.mjs");
+        return releaseMaterialsSelection(db, ids, d);
+      },
+    };
+  }
   return {
     kind: "supabase",
     reader,
+    curationBackend: curation,
     async recentForDupe(date) {
       return sb.recentJokesForDupe(date, DUPE_LOOKBACK_DAYS);
     },
@@ -262,29 +302,29 @@ async function openBackend() {
       return sb.dailyPublish(content, date, hash);
     },
     async saveAnalysis(rec) {
-      return sb.saveAnalysis(rec);
+      return (cur ?? sb).saveAnalysis(...arguments);
     },
     async insertMaterials(rows) {
-      return sb.insertMaterials(rows);
+      return (cur ?? sb).insertMaterials(...arguments);
     },
     async listPendingJudgement(limit) {
-      return sb.listPendingJudgement(limit);
+      return (cur ?? sb).listPendingJudgement(...arguments);
     },
     async applyJudgements(results, minScores) {
-      return sb.applyJudgements(results, minScores);
+      return (cur ?? sb).applyJudgements(...arguments);
     },
     async listEligibleMaterials(minScores) {
-      return sb.listEligibleMaterials(minScores);
+      return (cur ?? sb).listEligibleMaterials(...arguments);
     },
     async markMaterialsSelected(ids, issueDate) {
-      return sb.markMaterialsSelected(ids, issueDate);
+      return (cur ?? sb).markMaterialsSelected(...arguments);
     },
     async releaseMaterialsSelection(ids, issueDate) {
-      return sb.releaseMaterialsSelection(ids, issueDate);
+      return (cur ?? sb).releaseMaterialsSelection(...arguments);
     },
     async materialsStats() {
-      // 云端没有专用统计函数：用可入选数量近似（CLI 展示用）
-      const eligible = await sb.listEligibleMaterials(SELECTION.collected.minScores);
+      // 统计用可入选数量近似（CLI 展示用）；策展后端可能是本地库
+      const eligible = await (cur ?? sb).listEligibleMaterials(SELECTION.collected.minScores);
       return { eligible: eligible.length };
     },
     async readIssue(date) {
